@@ -45,7 +45,7 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
         .cloned()
         .or_else(|| match state.selected_domain {
             20 => state.aircraft_at_sorted(state.selected_row).cloned(),
-            21 => state.vessel_list().get(state.selected_row).cloned(),
+            21 => state.vessel_at_sorted(state.selected_row).cloned(),
             _ => state.aircraft_at_sorted(0).cloned(),
         });
 

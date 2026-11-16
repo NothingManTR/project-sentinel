@@ -27,13 +27,12 @@ impl AisStreamClient {
         loop {
             match connect_async(url).await {
                 Ok((mut ws_stream, _)) => {
-                    // AISStream BoundingBoxes formatı: [[[Kuzey_Lat, Bati_Lon], [Guney_Lat, Dogu_Lon]]]
-                    // Odak: Akdeniz, Ege, Karadeniz, Orta Doğu, Kızıldeniz, Basra ve Avrupa stratejik suları
+                    // AISStream Küresel BoundingBoxes: Tüm Dünya Okyanusları ve Stratejik Boğazlar
+                    // (İstanbul/Çanakkale, Süveyş/Bab el-Mandep, Hürmüz, Malakka, Tayvan, Panama, Avrupa)
                     let sub_msg = json!({
                         "APIKey": key,
                         "BoundingBoxes": [
-                            [[48.0, -6.0], [24.0, 58.0]],
-                            [[65.0, -10.0], [45.0, 30.0]]
+                            [[90.0, -180.0], [-90.0, 180.0]]
                         ],
                         "FilterMessageTypes": ["PositionReport", "ShipStaticData"]
                     });

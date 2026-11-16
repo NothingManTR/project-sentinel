@@ -95,6 +95,8 @@ pub struct SatellitePass {
     pub el_deg: f64,
     pub next_pass_secs: u64,
     pub pass_duration_secs: u64,
+    #[serde(default)]
+    pub ground_track: Vec<(f64, f64)>,
 }
 
 /// Shodan & Shodan InternetDB Host İnceleme Raporu

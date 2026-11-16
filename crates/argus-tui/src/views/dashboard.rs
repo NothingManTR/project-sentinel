@@ -88,34 +88,56 @@ fn render_proximity_radar_table(frame: &mut Frame, area: Rect, state: &mut AppSt
     let st_lon = state.station_lon;
     let q_lower = state.search_query.to_lowercase();
 
-    let targets: Vec<(usize, _)> = state
-        .targets
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| {
-            if q_lower.is_empty() {
-                true
-            } else {
-                t.callsign.to_lowercase().contains(&q_lower)
+    state.ensure_proximity_indices();
+    let visible_rows = area.height.saturating_sub(3) as usize;
+    let (total_targets, page_indices): (usize, Vec<(usize, usize)>) = if q_lower.is_empty() {
+        let total = state.cached_prox_indices.len();
+        let max_scroll = total.saturating_sub(1);
+        if state.target_scroll > max_scroll {
+            state.target_scroll = max_scroll;
+        }
+        let items = state
+            .cached_prox_indices
+            .iter()
+            .skip(state.target_scroll)
+            .take(visible_rows)
+            .map(|&buf_idx| (buf_idx, buf_idx))
+            .collect();
+        (total, items)
+    } else {
+        let matched: Vec<(usize, usize)> = state
+            .cached_prox_indices
+            .iter()
+            .filter_map(|&buf_idx| {
+                let t = state.targets.get(buf_idx)?;
+                if t.callsign.to_lowercase().contains(&q_lower)
                     || t.id.to_lowercase().contains(&q_lower)
                     || t.info.to_lowercase().contains(&q_lower)
-            }
-        })
-        .collect();
-
-    let visible_rows = area.height.saturating_sub(3) as usize;
-    let max_scroll = targets.len().saturating_sub(1);
-    if state.target_scroll > max_scroll {
-        state.target_scroll = max_scroll;
-    }
+                {
+                    Some((buf_idx, buf_idx))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let total = matched.len();
+        let max_scroll = total.saturating_sub(1);
+        if state.target_scroll > max_scroll {
+            state.target_scroll = max_scroll;
+        }
+        let items = matched
+            .into_iter()
+            .skip(state.target_scroll)
+            .take(visible_rows)
+            .collect();
+        (total, items)
+    };
 
     let mut rows = Vec::new();
-    for (offset, (orig_idx, track)) in targets
-        .iter()
-        .skip(state.target_scroll)
-        .take(visible_rows)
-        .enumerate()
-    {
+    for (offset, (orig_idx, buf_idx)) in page_indices.into_iter().enumerate() {
+        let Some(track) = state.targets.get(buf_idx) else {
+            continue;
+        };
         let is_selected = state.selected_target_id.as_deref() == Some(track.id.as_str());
         let d_km = haversine_km(st_lat, st_lon, track.geo.lat, track.geo.lon);
         let brg = initial_bearing_deg(st_lat, st_lon, track.geo.lat, track.geo.lon);
@@ -191,7 +213,7 @@ fn render_proximity_radar_table(frame: &mut Frame, area: Rect, state: &mut AppSt
         };
         state
             .hit_tester
-            .register(row_area, HitTarget::TableRow(2, *orig_idx));
+            .register(row_area, HitTarget::TableRow(2, orig_idx));
     }
 
     let widths = [
@@ -211,7 +233,7 @@ fn render_proximity_radar_table(frame: &mut Frame, area: Rect, state: &mut AppSt
             .border_style(Style::default().fg(BORDER_DIM))
             .title(format!(
                 " [ BIRLESIK HAVA & DENIZ RADAR AKISI ({} Hedef) ] ",
-                targets.len()
+                total_targets
             ))
             .style(Style::default().bg(BG_PANEL)),
     );

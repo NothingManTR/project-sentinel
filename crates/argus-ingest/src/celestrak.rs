@@ -353,6 +353,19 @@ impl CelesTrakClient {
                             found_secs
                         };
 
+                        let mut ground_track = Vec::with_capacity(19);
+                        ground_track.push((lon, lat));
+                        for m in (5..=90).step_by(5) {
+                            if let Ok(fut_pred) = constants.propagate(diff_mins + m as f64) {
+                                let fut_dt = now + chrono::Duration::minutes(m);
+                                let fut_ecef = Self::teme_to_ecef(fut_pred.position, fut_dt);
+                                let r_f = (fut_ecef[0].powi(2) + fut_ecef[1].powi(2) + fut_ecef[2].powi(2)).sqrt().max(1e-6);
+                                let f_lat = (fut_ecef[2] / r_f).asin().to_degrees();
+                                let f_lon = fut_ecef[1].atan2(fut_ecef[0]).to_degrees();
+                                ground_track.push((f_lon, f_lat));
+                            }
+                        }
+
                         passes.push(SatellitePass {
                             norad_id: entry.norad_id,
                             name: entry.name.clone(),
@@ -364,6 +377,7 @@ impl CelesTrakClient {
                             el_deg: el,
                             next_pass_secs,
                             pass_duration_secs: if entry.norad_id == 47306 { 86400 } else { 580 },
+                            ground_track,
                         });
                     }
                 }

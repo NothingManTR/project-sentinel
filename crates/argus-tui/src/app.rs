@@ -31,37 +31,69 @@ impl App {
     }
 
     pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> anyhow::Result<()> {
-        let tick_rate = Duration::from_millis(40); // 25 FPS akıcı render
+        let poll_wait = Duration::from_millis(50);
+        let mut needs_redraw = true;
+        let mut last_redraw = Instant::now();
+        let mut last_events_ver = u64::MAX;
+        let mut last_sdr_status = String::new();
+        let mut last_wf_len = usize::MAX;
+        let mut last_sat_len = usize::MAX;
 
         loop {
             if self.should_quit {
                 break;
             }
 
-            // POST / BIOS açılış ekranını her döngüde ilerlet (fare hareketi dondurmasın)
             {
                 let mut st = self.state.write();
                 if st.is_splash_active {
                     st.advance_splash();
+                    needs_redraw = true;
+                }
+                if st.total_events_received != last_events_ver
+                    || st.waterfall_data.len() != last_wf_len
+                    || st.satellites.len() != last_sat_len
+                    || st.sdr_status != last_sdr_status
+                {
+                    last_events_ver = st.total_events_received;
+                    last_wf_len = st.waterfall_data.len();
+                    last_sat_len = st.satellites.len();
+                    last_sdr_status.clone_from(&st.sdr_status);
+                    needs_redraw = true;
                 }
             }
 
-            // Çizim
-            terminal.draw(|frame| {
-                let mut lock = self.state.write();
-                render_main_ui(frame, &mut lock);
-            })?;
+            if needs_redraw || last_redraw.elapsed() >= Duration::from_millis(500) {
+                terminal.draw(|frame| {
+                    let mut lock = self.state.write();
+                    render_main_ui(frame, &mut lock);
+                })?;
+                needs_redraw = false;
+                last_redraw = Instant::now();
+            }
 
-            // Girişleri Dinleme
-            if event::poll(tick_rate)? {
-                match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.handle_key(key.code, key.modifiers).await;
+            // Ilk olayi kisa sure bekle, ardindan birikmis tum olaylari tek seferde bosalt (0 gecikme)
+            if event::poll(poll_wait)? {
+                loop {
+                    match event::read()? {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            self.handle_key(key.code, key.modifiers).await;
+                            needs_redraw = true;
+                        }
+                        Event::Mouse(mouse) => {
+                            if !matches!(mouse.kind, MouseEventKind::Moved) {
+                                self.handle_mouse(mouse).await;
+                                needs_redraw = true;
+                            }
+                        }
+                        Event::Resize(_, _) => {
+                            needs_redraw = true;
+                        }
+                        _ => {}
                     }
-                    Event::Mouse(mouse) => {
-                        self.handle_mouse(mouse).await;
+                    if self.should_quit || !event::poll(Duration::ZERO)? {
+                        break;
                     }
-                    _ => {}
                 }
             }
         }
@@ -332,10 +364,65 @@ impl App {
                 }
             }
             ActiveView::Sigint => {
+                if st.sdr_freq_input_active {
+                    match code {
+                        KeyCode::Esc => {
+                            st.sdr_freq_input_active = false;
+                            st.sdr_freq_input.clear();
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        KeyCode::Enter => {
+                            if let Ok(freq) = st.sdr_freq_input.trim().parse::<f64>() {
+                                if (100.0..=30000.0).contains(&freq) {
+                                    st.current_frequency_khz = freq;
+                                    st.live_status = format!("SDR FREKANS: {:.1} kHz {}", freq, st.sdr_mode);
+                                    self.audio.play(SoundEffect::Blip);
+                                }
+                            }
+                            st.sdr_freq_input_active = false;
+                            st.sdr_freq_input.clear();
+                        }
+                        KeyCode::Backspace => {
+                            st.sdr_freq_input.pop();
+                        }
+                        KeyCode::Char(c)
+                            if (c.is_ascii_digit() || c == '.') && st.sdr_freq_input.len() < 8 =>
+                        {
+                            st.sdr_freq_input.push(c);
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 match code {
                     KeyCode::Esc => {
                         st.set_view(ActiveView::Dashboard);
                         self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Char('f') | KeyCode::Char('F') => {
+                        st.sdr_freq_input_active = true;
+                        st.sdr_freq_input.clear();
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Char('u') | KeyCode::Char('U') => {
+                        st.sdr_mode = match st.sdr_mode.as_str() {
+                            "USB" => "LSB",
+                            "LSB" => "AM",
+                            "AM" => "CW",
+                            _ => "USB",
+                        }
+                        .to_string();
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Char('v') | KeyCode::Char('V') => {
+                        st.sdr_recording = !st.sdr_recording;
+                        if !st.sdr_recording && !st.is_radio_playing {
+                            st.sdr_rec_path.clear();
+                        }
+                        self.audio.play(SoundEffect::Blip);
                         return;
                     }
                     KeyCode::Char('s') | KeyCode::Char('S') => {
@@ -344,10 +431,21 @@ impl App {
                         self.audio.play(SoundEffect::Click);
                         return;
                     }
+                    KeyCode::Char('l') | KeyCode::Char('L') => {
+                        st.sdr_auto_failover = !st.sdr_auto_failover;
+                        st.sdr_status = if st.sdr_auto_failover {
+                            "OTO-GECIS ACIK: Yanit vermeyen alicidan siradakine gecilir".to_string()
+                        } else {
+                            "ALICI KILITLI: Secili alicida uzun sureli baglanti denenecek".to_string()
+                        };
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
                     KeyCode::Char(d) if ('1'..='9').contains(&d) => {
                         let idx = (d as usize) - ('1' as usize);
-                        if let Some(p) = st.radio_presets.get(idx) {
-                            st.current_frequency_khz = p.frequency_khz;
+                        if let Some((freq, mode)) = st.radio_presets.get(idx).map(|p| (p.frequency_khz, p.mode.clone())) {
+                            st.current_frequency_khz = freq;
+                            st.sdr_mode = mode;
                             Self::sync_radio_state(&self.audio, &st);
                             self.audio.play(SoundEffect::Click);
                         }
@@ -388,8 +486,21 @@ impl App {
                     }
                     KeyCode::Enter => {
                         if st.sigint_focus == 0 {
-                            if st.sdr_scroll < st.sdr_nodes.len() {
-                                st.active_sdr_idx = st.sdr_scroll;
+                            let q_lower = st.search_query.to_lowercase();
+                            let target_idx = st
+                                .sdr_nodes
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, n)| {
+                                    q_lower.is_empty()
+                                        || n.host_port.to_lowercase().contains(&q_lower)
+                                        || n.location.to_lowercase().contains(&q_lower)
+                                        || n.name.to_lowercase().contains(&q_lower)
+                                })
+                                .nth(st.sdr_scroll)
+                                .map(|(i, _)| i);
+                            if let Some(real_idx) = target_idx {
+                                st.active_sdr_idx = real_idx;
                                 if !st.is_radio_playing {
                                     st.is_radio_playing = true;
                                     Self::sync_radio_state(&self.audio, &st);
@@ -401,6 +512,46 @@ impl App {
                             if Self::open_item_dossier(&mut st, 30, idx) {
                                 self.audio.play(SoundEffect::Blip);
                             }
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            ActiveView::Masint => {
+                match code {
+                    KeyCode::Esc => {
+                        st.set_view(ActiveView::Dashboard);
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Char('1') => { st.masint_tab = 0; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
+                    KeyCode::Char('2') => { st.masint_tab = 1; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
+                    KeyCode::Char('3') => { st.masint_tab = 2; st.radiation_scroll = 0; self.audio.play(SoundEffect::Click); return; }
+                    KeyCode::Up => {
+                        if st.masint_tab == 2 {
+                            st.radiation_scroll = st.radiation_scroll.saturating_sub(1);
+                        } else {
+                            st.geo_scroll = st.geo_scroll.saturating_sub(1);
+                        }
+                        return;
+                    }
+                    KeyCode::Down => {
+                        if st.masint_tab == 2 {
+                            st.radiation_scroll = st.radiation_scroll.saturating_add(1);
+                        } else {
+                            st.geo_scroll = st.geo_scroll.saturating_add(1);
+                        }
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        let (dom, idx) = match st.masint_tab {
+                            1 => (51, st.geo_scroll),
+                            2 => (53, st.radiation_scroll),
+                            _ => (50, st.geo_scroll),
+                        };
+                        if Self::open_item_dossier(&mut st, dom, idx) {
+                            self.audio.play(SoundEffect::Blip);
                         }
                         return;
                     }
@@ -515,9 +666,11 @@ impl App {
                     ActiveView::AirTracks | ActiveView::SeaTracks | ActiveView::Dashboard | ActiveView::Geoint
                 ) =>
             {
+                let air_pos = st.air_scroll;
+                let sea_pos = st.sea_scroll;
                 let target = match st.active_view {
-                    ActiveView::AirTracks => st.aircraft_at_sorted(st.air_scroll).cloned(),
-                    ActiveView::SeaTracks => st.vessel_list().get(st.sea_scroll).cloned(),
+                    ActiveView::AirTracks => st.aircraft_at_sorted(air_pos).cloned(),
+                    ActiveView::SeaTracks => st.vessel_at_sorted(sea_pos).cloned(),
                     _ => st
                         .targets
                         .get(st.target_scroll)
@@ -806,11 +959,44 @@ impl App {
                             self.audio.play(SoundEffect::Click);
                         }
                         HitTarget::SigintPreset(idx) => {
-                            if let Some(p) = st.radio_presets.get(idx) {
-                                st.current_frequency_khz = p.frequency_khz;
+                            if let Some((freq, mode)) = st.radio_presets.get(idx).map(|p| (p.frequency_khz, p.mode.clone())) {
+                                st.current_frequency_khz = freq;
+                                st.sdr_mode = mode;
                                 Self::sync_radio_state(&self.audio, &st);
                                 self.audio.play(SoundEffect::Click);
                             }
+                        }
+                        HitTarget::ToggleSdrFreqInput => {
+                            st.sdr_freq_input_active = !st.sdr_freq_input_active;
+                            st.sdr_freq_input.clear();
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::CycleSdrMode => {
+                            st.sdr_mode = match st.sdr_mode.as_str() {
+                                "USB" => "LSB",
+                                "LSB" => "AM",
+                                "AM" => "CW",
+                                _ => "USB",
+                            }
+                            .to_string();
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::ToggleSdrRecord => {
+                            st.sdr_recording = !st.sdr_recording;
+                            self.audio.play(SoundEffect::Blip);
+                        }
+                        HitTarget::MasintTab(tid) => {
+                            st.masint_tab = tid.min(2);
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::ShodanPreset(idx) => {
+                            st.shodan_input_ip = match idx {
+                                0 => "1.1.1.1",
+                                1 => "8.8.8.8",
+                                _ => "9.9.9.9",
+                            }
+                            .to_string();
+                            self.audio.play(SoundEffect::Click);
                         }
                         HitTarget::ToggleRadioAudio => {
                             st.is_radio_playing = !st.is_radio_playing;
@@ -844,6 +1030,15 @@ impl App {
                         }
                         HitTarget::SdrNodeList => {
                             st.sigint_focus = 0;
+                        }
+                        HitTarget::ToggleSdrAutoFailover => {
+                            st.sdr_auto_failover = !st.sdr_auto_failover;
+                            st.sdr_status = if st.sdr_auto_failover {
+                                "OTO-GECIS ACIK: Yanit vermeyen alicidan siradakine gecilir".to_string()
+                            } else {
+                                "ALICI KILITLI: Secili alicida uzun sureli baglanti denenecek".to_string()
+                            };
+                            self.audio.play(SoundEffect::Click);
                         }
                         HitTarget::InspectorAction(act_id) => {
                             match act_id {
@@ -1082,8 +1277,7 @@ impl App {
 
         // 2. SeaTracks Ekranından Tıklanan Gemi (tile_idx == 21)
         if tile_idx == 21 {
-            let list = st.vessel_list();
-            if let Some(t) = list.get(row_idx) {
+            if let Some(t) = st.vessel_at_sorted(row_idx).cloned() {
                 st.selected_target_id = Some(t.id.clone());
                 st.open_dialog(
                     format!("M-DOSSIER: {} [MMSI:{}]", t.callsign, t.id),
@@ -1424,7 +1618,7 @@ impl App {
                 }
             }
             21 => {
-                if let Some(t) = st.vessel_list().get(row_idx) {
+                if let Some(t) = st.vessel_at_sorted(row_idx) {
                     st.selected_target_id = Some(t.id.clone());
                 }
             }

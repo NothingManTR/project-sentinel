@@ -3,6 +3,8 @@ use argus_core::types::SdrNodeInfo;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use std::f32::consts::TAU;
+use std::fs::{self, File};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
@@ -255,6 +257,61 @@ fn build_tune_cmd(freq_khz: f64, mode: &str) -> String {
     )
 }
 
+struct WavRecorder {
+    writer: BufWriter<File>,
+    sample_count: u32,
+    path: String,
+}
+
+impl WavRecorder {
+    fn create(freq_khz: f64, sample_rate: u32) -> std::io::Result<Self> {
+        fs::create_dir_all("recordings")?;
+        let stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let path = format!("recordings/kiwi_{:.0}kHz_{}.wav", freq_khz, stamp);
+        let file = File::create(&path)?;
+        let mut writer = BufWriter::new(file);
+        // 44-byte RIFF/PCM header placeholder (16-bit mono)
+        writer.write_all(b"RIFF")?;
+        writer.write_all(&0u32.to_le_bytes())?;
+        writer.write_all(b"WAVEfmt ")?;
+        writer.write_all(&16u32.to_le_bytes())?;
+        writer.write_all(&1u16.to_le_bytes())?; // PCM
+        writer.write_all(&1u16.to_le_bytes())?; // Mono
+        writer.write_all(&sample_rate.to_le_bytes())?;
+        writer.write_all(&(sample_rate * 2).to_le_bytes())?;
+        writer.write_all(&2u16.to_le_bytes())?;
+        writer.write_all(&16u16.to_le_bytes())?;
+        writer.write_all(b"data")?;
+        writer.write_all(&0u32.to_le_bytes())?;
+        Ok(Self {
+            writer,
+            sample_count: 0,
+            path,
+        })
+    }
+
+    fn write_samples(&mut self, samples: &[f32]) {
+        for &s in samples {
+            let pcm = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+            if self.writer.write_all(&pcm.to_le_bytes()).is_ok() {
+                self.sample_count = self.sample_count.saturating_add(1);
+            }
+        }
+    }
+
+    fn finish(mut self) {
+        let data_bytes = self.sample_count.saturating_mul(2);
+        let riff_size = data_bytes.saturating_add(36);
+        let _ = self.writer.flush();
+        let file = self.writer.get_mut();
+        let _ = file.seek(SeekFrom::Start(4));
+        let _ = file.write_all(&riff_size.to_le_bytes());
+        let _ = file.seek(SeekFrom::Start(40));
+        let _ = file.write_all(&data_bytes.to_le_bytes());
+        let _ = file.flush();
+    }
+}
+
 /// Gerçek KiwiSDR WebSocket İstemci Görevi
 pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
     let http_client = reqwest::Client::builder()
@@ -277,10 +334,16 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
     let mut last_dir_refresh = Instant::now();
 
     loop {
-        let (playing, freq_khz, active_idx, node_opt) = {
+        let (playing, freq_khz, active_idx, auto_failover, node_opt) = {
             let st = state.read();
             let node = st.sdr_nodes.get(st.active_sdr_idx).cloned();
-            (st.is_radio_playing, st.current_frequency_khz, st.active_sdr_idx, node)
+            (
+                st.is_radio_playing,
+                st.current_frequency_khz,
+                st.active_sdr_idx,
+                st.sdr_auto_failover,
+                node,
+            )
         };
 
         if !playing {
@@ -326,27 +389,50 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
             .as_millis();
         let ws_url = format!("ws://{}/kiwi/{}/SND", target_node.host_port, ts);
 
+        let connect_timeout = if auto_failover {
+            Duration::from_secs(6)
+        } else {
+            Duration::from_secs(15)
+        };
+
         {
             let mut st = state.write();
-            st.sdr_status = format!("BAGLANIYOR: {} ({:.1} kHz)...", target_node.host_port, freq_khz);
+            st.sdr_status = if auto_failover {
+                format!("BAGLANIYOR: {} ({:.1} kHz)...", target_node.host_port, freq_khz)
+            } else {
+                format!(
+                    "BAGLANIYOR [KILITLI {}sn]: {} ({:.1} kHz)...",
+                    connect_timeout.as_secs(),
+                    target_node.host_port,
+                    freq_khz
+                )
+            };
         }
 
-        let conn_res = tokio::time::timeout(Duration::from_secs(6), connect_async(&ws_url)).await;
+        let conn_res = tokio::time::timeout(connect_timeout, connect_async(&ws_url)).await;
         let (mut ws_stream, _) = match conn_res {
             Ok(Ok(pair)) => pair,
             _ => {
-                // Bu alıcı doluysa veya yanıt vermediyse sıradaki canlı KiwiSDR alıcısına geç
-                {
+                let failover_now = {
                     let mut st = state.write();
-                    if !st.sdr_nodes.is_empty() {
-                        st.active_sdr_idx = (active_idx + 1) % st.sdr_nodes.len();
+                    let fo = st.sdr_auto_failover;
+                    if fo {
+                        if !st.sdr_nodes.is_empty() {
+                            st.active_sdr_idx = (active_idx + 1) % st.sdr_nodes.len();
+                        }
+                        st.sdr_status = format!(
+                            "ALICI DOLU/YANIT YOK ({}), SIRADAKI DENENIYOR...",
+                            target_node.host_port
+                        );
+                    } else {
+                        st.sdr_status = format!(
+                            "YANIT YOK/ZAMAN ASIMI [KILITLI]: {} - Tekrar deneniyor...",
+                            target_node.host_port
+                        );
                     }
-                    st.sdr_status = format!(
-                        "ALICI DOLU/YANIT YOK ({}), SIRADAKI DENENIYOR...",
-                        target_node.host_port
-                    );
-                }
-                sleep(Duration::from_millis(600)).await;
+                    fo
+                };
+                sleep(Duration::from_millis(if failover_now { 600 } else { 2500 })).await;
                 continue;
             }
         };
@@ -357,6 +443,7 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
             .await
             .is_err()
         {
+            sleep(Duration::from_millis(1000)).await;
             continue;
         }
 
@@ -365,51 +452,50 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
         let mut tuned_freq = freq_khz;
         let mut tuned_mode = {
             let st = state.read();
-            st.radio_presets
-                .iter()
-                .find(|p| (p.frequency_khz - freq_khz).abs() < 0.1)
-                .map(|p| p.mode.clone())
-                .unwrap_or_else(|| "USB".to_string())
+            st.sdr_mode.clone()
         };
         let mut last_keepalive = Instant::now();
         let mut last_snd_received = Instant::now();
         let mut adpcm = ImaAdpcmDecoder::default();
+        let mut read_timed_out_or_errored = false;
+        let mut recorder: Option<WavRecorder> = None;
 
-        while let Ok(Some(msg_res)) =
-            tokio::time::timeout(Duration::from_secs(5), ws_stream.next()).await
-        {
-            // Eğer 4 saniye içinde hiçbir gerçek SND ses paketi gelmediyse (örn. şifreli kanal / badp=1),
-            // beklemeden sıradaki KiwiSDR alıcısına geç!
-            if last_snd_received.elapsed() > Duration::from_secs(4) {
-                let _ = ws_stream.close(None).await;
-                let mut st = state.write();
-                if !st.sdr_nodes.is_empty() {
-                    st.active_sdr_idx = (active_idx + 1) % st.sdr_nodes.len();
-                }
-                st.sdr_status = format!(
-                    "SES AKISI YOK ({}), SIRADAKI ALICIYA GECILIYOR...",
-                    target_node.host_port
-                );
-                break;
-            }
-            // Kullanıcı radyoyu kapattı mı veya başka bir SDR sunucusu seçti mi?
-            let (still_playing, req_freq, req_idx, req_mode) = {
+        loop {
+            let (still_playing, req_freq, req_idx, cur_auto_failover, req_mode, want_rec) = {
                 let st = state.read();
-                let m = st
-                    .radio_presets
-                    .iter()
-                    .find(|p| (p.frequency_khz - st.current_frequency_khz).abs() < 0.1)
-                    .map(|p| p.mode.clone())
-                    .unwrap_or_else(|| "USB".to_string());
                 (
                     st.is_radio_playing,
                     st.current_frequency_khz,
                     st.active_sdr_idx,
-                    m,
+                    st.sdr_auto_failover,
+                    st.sdr_mode.clone(),
+                    st.sdr_recording,
                 )
             };
 
+            if want_rec && configured && recorder.is_none() {
+                if let Ok(rec) = WavRecorder::create(tuned_freq, sample_rate) {
+                    let mut st = state.write();
+                    st.sdr_rec_path = rec.path.clone();
+                    recorder = Some(rec);
+                }
+            } else if !want_rec {
+                if let Some(rec) = recorder.take() {
+                    let finished_path = rec.path.clone();
+                    rec.finish();
+                    let mut st = state.write();
+                    st.sdr_rec_path = format!("KAYDEDILDI: {}", finished_path);
+                }
+            }
+
             if !still_playing || req_idx != active_idx {
+                if let Some(rec) = recorder.take() {
+                    let finished_path = rec.path.clone();
+                    rec.finish();
+                    let mut st = state.write();
+                    st.sdr_recording = false;
+                    st.sdr_rec_path = format!("KAYDEDILDI: {}", finished_path);
+                }
                 let _ = ws_stream.close(None).await;
                 let mut st = state.write();
                 st.sdr_audio_queue.lock().clear();
@@ -419,7 +505,48 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
                 break;
             }
 
-            // Kullanıcı frekansı veya modu değiştirdiyse açık WebSocket üzerinden anında yeniden调 (retune) et
+            let snd_grace = if cur_auto_failover {
+                Duration::from_secs(4)
+            } else {
+                Duration::from_secs(25)
+            };
+
+            if last_snd_received.elapsed() > snd_grace {
+                let _ = ws_stream.close(None).await;
+                let mut st = state.write();
+                if cur_auto_failover {
+                    if !st.sdr_nodes.is_empty() {
+                        st.active_sdr_idx = (active_idx + 1) % st.sdr_nodes.len();
+                    }
+                    st.sdr_status = format!(
+                        "SES AKISI YOK ({}), SIRADAKI ALICIYA GECILIYOR...",
+                        target_node.host_port
+                    );
+                } else {
+                    st.sdr_status = format!(
+                        "SES AKISI BEKLENDI ({}sn) [KILITLI]: {} - Yeniden baglaniliyor...",
+                        snd_grace.as_secs(),
+                        target_node.host_port
+                    );
+                    read_timed_out_or_errored = true;
+                }
+                break;
+            }
+
+            let ws_read_timeout = if cur_auto_failover {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_secs(12)
+            };
+            let msg_res = match tokio::time::timeout(ws_read_timeout, ws_stream.next()).await {
+                Ok(Some(res)) => res,
+                _ => {
+                    read_timed_out_or_errored = true;
+                    break;
+                }
+            };
+
+            // Kullanıcı frekansı veya modu değiştirdiyse açık WebSocket üzerinden anında yeniden ayarla
             if configured && ((req_freq - tuned_freq).abs() > 0.05 || req_mode != tuned_mode) {
                 tuned_freq = req_freq;
                 tuned_mode = req_mode;
@@ -452,7 +579,7 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
                 _ => continue,
             };
 
-            // Sunucu MSG paketlerinde hata/doluluk/şifre kontrolü (her zaman kontrol edilir)
+            // Sunucu MSG paketlerinde hata/doluluk/şifre kontrolü
             if bin_data.starts_with(b"MSG") {
                 let text_lossy = String::from_utf8_lossy(&bin_data);
                 if text_lossy.contains("too_busy=")
@@ -461,8 +588,23 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
                     || text_lossy.contains("down=")
                 {
                     let mut st = state.write();
-                    if !st.sdr_nodes.is_empty() {
-                        st.active_sdr_idx = (active_idx + 1) % st.sdr_nodes.len();
+                    if st.sdr_auto_failover {
+                        if !st.sdr_nodes.is_empty() {
+                            st.active_sdr_idx = (active_idx + 1) % st.sdr_nodes.len();
+                        }
+                    } else {
+                        let reason = if text_lossy.contains("too_busy=") {
+                            "KANAL DOLU (too_busy)"
+                        } else if text_lossy.contains("badp=1") {
+                            "SIFRELI (badp=1)"
+                        } else {
+                            "KAPALI / YONLENDIRME"
+                        };
+                        st.sdr_status = format!(
+                            "{} [KILITLI]: {} - Ayni alici tekrar denenecek...",
+                            reason, target_node.host_port
+                        );
+                        read_timed_out_or_errored = true;
                     }
                     break;
                 }
@@ -521,6 +663,9 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
                 parse_kiwi_snd_frame(&bin_data, &mut adpcm)
             {
                 last_snd_received = Instant::now();
+                if let Some(rec) = recorder.as_mut() {
+                    rec.write_samples(&samples);
+                }
                 let wf_row = if seq.is_multiple_of(3) {
                     Some(compute_dft_waterfall_row(&samples, 60))
                 } else {
@@ -548,6 +693,18 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
                 }
                 q.push_back((sample_rate, samples));
             }
+        }
+
+        if let Some(rec) = recorder.take() {
+            let finished_path = rec.path.clone();
+            rec.finish();
+            let mut st = state.write();
+            st.sdr_recording = false;
+            st.sdr_rec_path = format!("KAYDEDILDI: {}", finished_path);
+        }
+
+        if read_timed_out_or_errored {
+            sleep(Duration::from_millis(2500)).await;
         }
     }
 }

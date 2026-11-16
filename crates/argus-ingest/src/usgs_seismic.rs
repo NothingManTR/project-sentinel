@@ -152,6 +152,63 @@ impl UsgsClient {
             }
         }
 
+        // 3. EMSC Resmi FDSNWS Yedek Beslemesi (Türkiye, Ege ve Doğu Akdeniz M2.5+)
+        let emsc_url = "https://www.seismicportal.eu/fdsnws/event/1/query?format=json&limit=25&minmagnitude=2.5&minlat=34&maxlat=43&minlon=24&maxlon=46";
+        if let Ok(resp) = self
+            .client
+            .get(emsc_url)
+            .timeout(std::time::Duration::from_secs(6))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(features) = json.get("features").and_then(|f| f.as_array()) {
+                        for item in features {
+                            let id = item["id"].as_str().unwrap_or("").to_string();
+                            if id.is_empty() {
+                                continue;
+                            }
+                            let props = &item["properties"];
+                            let mag = props["mag"].as_f64().unwrap_or(0.0);
+                            let place = props["flynn_region"]
+                                .as_str()
+                                .unwrap_or("Doğu Akdeniz / Anadolu (EMSC)")
+                                .to_string();
+                            let depth = props["depth"].as_f64().unwrap_or(10.0).abs();
+                            let lat = props["lat"].as_f64().unwrap_or(0.0);
+                            let lon = props["lon"].as_f64().unwrap_or(0.0);
+                            let time = props["time"]
+                                .as_str()
+                                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                                .map(|dt| dt.with_timezone(&Utc))
+                                .unwrap_or_else(Utc::now);
+
+                            if lat != 0.0 && lon != 0.0 {
+                                let already = quakes.iter().any(|q| {
+                                    (q.lat - lat).abs() < 0.08
+                                        && (q.lon - lon).abs() < 0.08
+                                        && (q.time - time).num_seconds().abs() < 120
+                                });
+                                if !already {
+                                    quakes.push(Earthquake {
+                                        id: format!("EMSC-{}", id),
+                                        place: format!("{} (EMSC)", place),
+                                        mag,
+                                        depth_km: depth,
+                                        time,
+                                        lat,
+                                        lon,
+                                        url: format!("https://www.seismicportal.eu/eventdetails.html?unid={}", id),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(quakes)
     }
 }

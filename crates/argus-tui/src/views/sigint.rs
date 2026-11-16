@@ -62,36 +62,78 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
     }
 
-    let current_preset = state
-        .radio_presets
-        .iter()
-        .find(|p| (p.frequency_khz - state.current_frequency_khz).abs() < 0.1);
-    let active_mode = current_preset.map(|p| p.mode.as_str()).unwrap_or("USB");
+    let active_mode = state.sdr_mode.as_str();
 
-    let hdr_prefix = "KIWISDR HF TUNER: ";
-    let freq_str = format!(" {:.1} kHz {} ", state.current_frequency_khz, active_mode);
-    let audio_btn_label = if state.is_radio_playing {
-        " [ ALICI: ACIK (Durdurmak icin S / Tikla) ] "
+    let hdr_prefix = "TUNER: ";
+    let freq_str = if state.sdr_freq_input_active {
+        format!(" [F: {}_ kHz] ", state.sdr_freq_input)
     } else {
-        " [ ALICI: KAPALI (Canli KiwiSDR Dinlemek icin S / Tikla) ] "
+        format!(" [F:{:.1}kHz] ", state.current_frequency_khz)
+    };
+    let mode_btn_label = format!(" [U:{}] ", active_mode);
+    let audio_btn_label = if state.is_radio_playing {
+        " [S:ACIK] "
+    } else {
+        " [S:KAPALI] "
+    };
+    let failover_btn_label = if state.sdr_auto_failover {
+        " [L:OTO-GECIS] "
+    } else {
+        " [L:KILITLI] "
+    };
+    let rec_btn_label = if state.sdr_recording {
+        " [V:KAYITTA] "
+    } else {
+        " [V:WAV KAYDET] "
     };
 
-    let audio_btn_x = chunks[0].x
-        + 1
-        + hdr_prefix.chars().count() as u16
-        + freq_str.chars().count() as u16
-        + 1;
-    let audio_btn_w = audio_btn_label.chars().count() as u16;
-    if audio_btn_x < chunks[0].x + chunks[0].width {
-        let avail_w = (chunks[0].x + chunks[0].width - audio_btn_x).min(audio_btn_w);
+    let mut cur_x = chunks[0].x + 1 + hdr_prefix.chars().count() as u16;
+    let freq_w = freq_str.chars().count() as u16;
+    if cur_x < chunks[0].x + chunks[0].width {
+        let aw = (chunks[0].x + chunks[0].width - cur_x).min(freq_w);
         state.hit_tester.register(
-            Rect {
-                x: audio_btn_x,
-                y: chunks[0].y + 1,
-                width: avail_w,
-                height: 1,
-            },
+            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
+            HitTarget::ToggleSdrFreqInput,
+        );
+    }
+    cur_x += freq_w + 1;
+
+    let mode_w = mode_btn_label.chars().count() as u16;
+    if cur_x < chunks[0].x + chunks[0].width {
+        let aw = (chunks[0].x + chunks[0].width - cur_x).min(mode_w);
+        state.hit_tester.register(
+            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
+            HitTarget::CycleSdrMode,
+        );
+    }
+    cur_x += mode_w + 1;
+
+    let audio_btn_w = audio_btn_label.chars().count() as u16;
+    if cur_x < chunks[0].x + chunks[0].width {
+        let aw = (chunks[0].x + chunks[0].width - cur_x).min(audio_btn_w);
+        state.hit_tester.register(
+            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
             HitTarget::ToggleRadioAudio,
+        );
+    }
+    cur_x += audio_btn_w + 1;
+
+    let failover_btn_w = failover_btn_label.chars().count() as u16;
+    if cur_x < chunks[0].x + chunks[0].width {
+        let aw = (chunks[0].x + chunks[0].width - cur_x).min(failover_btn_w);
+        state.hit_tester.register(
+            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
+            HitTarget::ToggleSdrAutoFailover,
+        );
+    }
+    cur_x += failover_btn_w + 1;
+
+    let rec_w = rec_btn_label.chars().count() as u16;
+    if cur_x < chunks[0].x + chunks[0].width {
+        let aw = (chunks[0].x + chunks[0].width - cur_x).min(rec_w);
+        state.hit_tester.register(
+            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
+            HitTarget::ToggleSdrRecord,
         );
     }
 
@@ -113,6 +155,48 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
         )
     };
 
+    let failover_status = if state.sdr_auto_failover {
+        Span::styled(
+            failover_btn_label,
+            Style::default()
+                .fg(TELETEXT_CYAN)
+                .bg(BG_SURFACE)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            failover_btn_label,
+            Style::default()
+                .fg(TELETEXT_BLACK)
+                .bg(TELETEXT_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
+    let rec_status = if state.sdr_recording {
+        Span::styled(
+            rec_btn_label,
+            Style::default()
+                .fg(TELETEXT_BLACK)
+                .bg(TELETEXT_RED)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            rec_btn_label,
+            Style::default()
+                .fg(FG_PRIMARY)
+                .bg(BG_SURFACE)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
+    let extra_status = if !state.sdr_rec_path.is_empty() {
+        format!(" | {} [{}]", state.sdr_status, state.sdr_rec_path)
+    } else {
+        format!(" | {}", state.sdr_status)
+    };
+
     let tuner_p = Paragraph::new(vec![
         Line::from(vec![
             Span::styled(
@@ -122,16 +206,22 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
             Span::styled(
                 freq_str,
                 Style::default()
-                    .fg(TELETEXT_CYAN)
-                    .bg(BG_SURFACE)
+                    .fg(if state.sdr_freq_input_active { TELETEXT_BLACK } else { TELETEXT_CYAN })
+                    .bg(if state.sdr_freq_input_active { TELETEXT_YELLOW } else { BG_SURFACE })
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            audio_status,
             Span::styled(
-                format!(" | {}", state.sdr_status),
-                Style::default().fg(FG_SECONDARY),
+                mode_btn_label,
+                Style::default().fg(TELETEXT_CYAN).bg(BG_SURFACE).add_modifier(Modifier::BOLD),
             ),
+            Span::raw(" "),
+            audio_status,
+            Span::raw(" "),
+            failover_status,
+            Span::raw(" "),
+            rec_status,
+            Span::styled(extra_status, Style::default().fg(FG_SECONDARY)),
         ]),
         Line::from(preset_spans),
     ])
@@ -200,7 +290,19 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     // Sag: Canli KiwiSDR Sunucu Secici (rx.linkfanel.net uzerinden cekilen gercek alicilar)
     // Kaydirilabilir tablo: Yukari/Asagi/PgUp/PgDn/Home/End ile gezin, Enter/Tik ile baglan, Tab ile odak degistir
     let list_area = mid_chunks[1];
-    let total_nodes = state.sdr_nodes.len();
+    let q_lower = state.search_query.to_lowercase();
+    let visible_nodes: Vec<(usize, _)> = state
+        .sdr_nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| {
+            q_lower.is_empty()
+                || n.host_port.to_lowercase().contains(&q_lower)
+                || n.location.to_lowercase().contains(&q_lower)
+                || n.name.to_lowercase().contains(&q_lower)
+        })
+        .collect();
+    let total_nodes = visible_nodes.len();
     if total_nodes > 0 && state.sdr_scroll >= total_nodes {
         state.sdr_scroll = total_nodes - 1;
     }
@@ -224,19 +326,18 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     if total_nodes == 0 {
         node_rows.push(Row::new(vec![
             Cell::from(""),
-            Cell::from("rx.linkfanel.net alici dizini sorgulaniyor..."),
+            Cell::from("rx.linkfanel.net alici dizini sorgulaniyor veya filtre bos..."),
         ]).style(Style::default().fg(FG_MUTED)));
     } else {
-        for (row_off, (idx, node)) in state
-            .sdr_nodes
+        for (row_off, (idx, node)) in visible_nodes
             .iter()
-            .enumerate()
+            .copied()
             .skip(offset)
             .take(visible)
             .enumerate()
         {
             let is_active = state.active_sdr_idx == idx;
-            let is_cursor = cursor == idx;
+            let is_cursor = cursor == offset + row_off;
             let marker = match (is_active, is_cursor) {
                 (true, true) => ">*",
                 (true, false) => " *",

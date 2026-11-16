@@ -143,10 +143,16 @@ pub struct AppState {
     pub eam_messages: RingBuffer<EamMessage>,
     pub radio_presets: Vec<RadioPreset>,
     pub current_frequency_khz: f64,
+    pub sdr_mode: String,
+    pub sdr_freq_input_active: bool,
+    pub sdr_freq_input: String,
+    pub sdr_recording: bool,
+    pub sdr_rec_path: String,
     pub is_radio_playing: bool,
     pub waterfall_data: Vec<Vec<u8>>,
     pub sdr_nodes: Vec<SdrNodeInfo>,
     pub active_sdr_idx: usize,
+    pub sdr_auto_failover: bool,
     pub sdr_connected_host: String,
     pub sdr_rssi_dbm: f32,
     pub sdr_sample_rate: u32,
@@ -179,6 +185,7 @@ pub struct AppState {
     pub eam_scroll: usize,
     pub sdr_scroll: usize,
     pub sigint_focus: usize,           // 0: KiwiSDR Alıcı Listesi (Varsayılan), 1: EAM Tablosu
+    pub masint_tab: usize,             // 0: Depremler (USGS/Kandilli/EMSC), 1: FIRMS Termal, 2: Safecast CBRN
     pub radiation_scroll: usize,
     
     // Filtreler (Hava Küresel/CENTCOM/Askeri ve Deniz Seçimi)
@@ -202,6 +209,17 @@ pub struct AppState {
     pub is_search_active: bool,
     pub total_events_received: u64,
     pub live_status: String,
+
+    // Sirali hedef indeks onbellegi (15000+ hedefte her kare yeniden siralamayi onler)
+    pub air_version: u64,
+    pub sea_version: u64,
+    pub targets_version: u64,
+    cached_air_key: (u64, usize, usize, bool),
+    pub cached_air_indices: Vec<usize>,
+    cached_sea_key: (u64, usize, usize, bool),
+    pub cached_sea_indices: Vec<usize>,
+    cached_prox_key: u64,
+    pub cached_prox_indices: Vec<usize>,
     
     // Fare Hit Tester
     pub hit_tester: HitTester,
@@ -239,7 +257,7 @@ impl AppState {
             gps_jamming_zones: Vec::new(),
             targets: RingBuffer::new(30000),
             air_targets: RingBuffer::new(22000),
-            sea_targets: RingBuffer::new(5000),
+            sea_targets: RingBuffer::new(10000),
             satellites: Vec::with_capacity(64),
             news: RingBuffer::new(200),
             cyber_incidents: RingBuffer::new(200),
@@ -315,10 +333,16 @@ impl AppState {
                 },
             ],
             current_frequency_khz: 11175.0,
+            sdr_mode: "USB".to_string(),
+            sdr_freq_input_active: false,
+            sdr_freq_input: String::new(),
+            sdr_recording: false,
+            sdr_rec_path: String::new(),
             is_radio_playing: false,
             waterfall_data: Vec::new(),
             sdr_nodes: Vec::new(),
             active_sdr_idx: 0,
+            sdr_auto_failover: true,
             sdr_connected_host: String::new(),
             sdr_rssi_dbm: -120.0,
             sdr_sample_rate: 12000,
@@ -343,6 +367,7 @@ impl AppState {
             eam_scroll: 0,
             sdr_scroll: 0,
             sigint_focus: 0,
+            masint_tab: 0,
             radiation_scroll: 0,
             air_filter: 0,
             sea_filter: 0,
@@ -360,6 +385,15 @@ impl AppState {
             is_search_active: false,
             total_events_received: 0,
             live_status: "SENTINEL AKTIF".to_string(),
+            air_version: 1,
+            sea_version: 1,
+            targets_version: 1,
+            cached_air_key: (0, 0, 0, false),
+            cached_air_indices: Vec::new(),
+            cached_sea_key: (0, 0, 0, false),
+            cached_sea_indices: Vec::new(),
+            cached_prox_key: 0,
+            cached_prox_indices: Vec::new(),
             hit_tester: HitTester::new(),
         };
 
@@ -471,9 +505,18 @@ impl AppState {
         indices
     }
 
-    pub fn aircraft_at_sorted(&self, pos: usize) -> Option<&TargetTrack> {
-        let indices = self.aircraft_sorted_indices();
-        indices.get(pos).and_then(|&idx| self.air_targets.get(idx))
+    pub fn ensure_air_indices(&mut self) -> &[usize] {
+        let key = (self.air_version, self.air_filter, self.air_sort_col, self.air_sort_asc);
+        if self.cached_air_key != key {
+            self.cached_air_indices = self.aircraft_sorted_indices();
+            self.cached_air_key = key;
+        }
+        &self.cached_air_indices
+    }
+
+    pub fn aircraft_at_sorted(&mut self, pos: usize) -> Option<&TargetTrack> {
+        let idx = *self.ensure_air_indices().get(pos)?;
+        self.air_targets.get(idx)
     }
 
     pub fn aircraft_list(&self) -> Vec<TargetTrack> {
@@ -481,6 +524,81 @@ impl AppState {
             .into_iter()
             .filter_map(|idx| self.air_targets.get(idx).cloned())
             .collect()
+    }
+
+    pub fn ensure_proximity_indices(&mut self) -> &[usize] {
+        if self.cached_prox_key != self.targets_version {
+            let st_lat = self.station_lat;
+            let st_lon = self.station_lon;
+            let mut scored: Vec<(usize, bool, f64)> = self
+                .targets
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let d = haversine_km(st_lat, st_lon, t.geo.lat, t.geo.lon);
+                    (i, t.is_military, d)
+                })
+                .collect();
+            scored.sort_by(|a, b| {
+                b.1.cmp(&a.1)
+                    .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+            });
+            self.cached_prox_indices = scored.into_iter().map(|(i, _, _)| i).collect();
+            self.cached_prox_key = self.targets_version;
+        }
+        &self.cached_prox_indices
+    }
+
+    fn evaluate_target_alert(&self, track: &TargetTrack) -> Option<(ThreatSeverity, String)> {
+        let id = &track.id;
+        let dist_km = haversine_km(self.station_lat, self.station_lon, track.geo.lat, track.geo.lon);
+        let is_emerg = matches!(track.squawk.as_deref(), Some("7700") | Some("7600") | Some("7500"));
+        if is_emerg {
+            return Some((
+                ThreatSeverity::Emergency,
+                format!(
+                    "ACIL SQUAWK {}: {} ({}) - {:.0} km",
+                    track.squawk.as_deref().unwrap_or(""),
+                    track.callsign,
+                    id,
+                    dist_km
+                ),
+            ));
+        }
+        if self.watchlist.contains(id) {
+            return Some((
+                ThreatSeverity::Critical,
+                format!("IZLEME LISTESI TESPITI: {} ({}) - {:.0} km", track.callsign, id, dist_km),
+            ));
+        }
+        if track.is_military && dist_km <= 180.0 {
+            return Some((
+                ThreatSeverity::Critical,
+                format!("YAKIN ASKERI HEDEF: {} ({}) - {:.0} km", track.callsign, id, dist_km),
+            ));
+        }
+        if track.is_military {
+            const CORRIDORS: &[(&str, f64, f64, f64)] = &[
+                ("Istanbul Bogazi", 41.12, 29.07, 45.0),
+                ("Canakkale Bogazi", 40.15, 26.40, 45.0),
+                ("Hurmuz Bogazi", 26.56, 56.25, 90.0),
+                ("Bab el-Mandep", 12.60, 43.35, 90.0),
+                ("Suveys Kanali", 30.58, 32.33, 65.0),
+            ];
+            for &(cname, clat, clon, radius_km) in CORRIDORS {
+                let d_corr = haversine_km(clat, clon, track.geo.lat, track.geo.lon);
+                if d_corr <= radius_km {
+                    return Some((
+                        ThreatSeverity::Warning,
+                        format!(
+                            "GEOFENCE [{}]: {} ({}) - {:.0} km",
+                            cname, track.callsign, id, d_corr
+                        ),
+                    ));
+                }
+            }
+        }
+        None
     }
 
     pub fn upsert_targets_batch(&mut self, tracks: Vec<TargetTrack>) {
@@ -527,27 +645,7 @@ impl AppState {
                 self.map_center_lon = track.geo.lon;
             }
 
-            let dist_km = haversine_km(self.station_lat, self.station_lon, track.geo.lat, track.geo.lon);
-            let is_emerg = matches!(track.squawk.as_deref(), Some("7700") | Some("7600") | Some("7500"));
-            if is_emerg || self.watchlist.contains(&id) || (track.is_military && dist_km <= 180.0) {
-                let msg = if is_emerg {
-                    format!(
-                        "ACIL SQUAWK {}: {} ({}) - {:.0} km",
-                        track.squawk.as_deref().unwrap_or(""),
-                        track.callsign,
-                        id,
-                        dist_km
-                    )
-                } else if self.watchlist.contains(&id) {
-                    format!("IZLEME LISTESI TESPITI: {} ({}) - {:.0} km", track.callsign, id, dist_km)
-                } else {
-                    format!("YAKIN ASKERI HEDEF: {} ({}) - {:.0} km", track.callsign, id, dist_km)
-                };
-                let sev = if is_emerg {
-                    ThreatSeverity::Emergency
-                } else {
-                    ThreatSeverity::Critical
-                };
+            if let Some((sev, msg)) = self.evaluate_target_alert(&track) {
                 let item = AlertItem {
                     timestamp: chrono::Utc::now(),
                     domain: track.domain.as_str().to_string(),
@@ -592,6 +690,8 @@ impl AppState {
             }
             self.total_events_received += 1;
         }
+        self.air_version = self.air_version.wrapping_add(1);
+        self.targets_version = self.targets_version.wrapping_add(1);
     }
 
     pub fn upsert_target(&mut self, mut track: TargetTrack) {
@@ -631,28 +731,7 @@ impl AppState {
             self.map_center_lon = track.geo.lon;
         }
 
-        // Otomatik tehdit / acil durum / yakın askeri hedef alarm kontrolü
-        let dist_km = haversine_km(self.station_lat, self.station_lon, track.geo.lat, track.geo.lon);
-        let is_emerg = matches!(track.squawk.as_deref(), Some("7700") | Some("7600") | Some("7500"));
-        if is_emerg || self.watchlist.contains(&id) || (track.is_military && dist_km <= 180.0) {
-            let msg = if is_emerg {
-                format!(
-                    "ACIL SQUAWK {}: {} ({}) - {:.0} km",
-                    track.squawk.as_deref().unwrap_or(""),
-                    track.callsign,
-                    id,
-                    dist_km
-                )
-            } else if self.watchlist.contains(&id) {
-                format!("IZLEME LISTESI TESPITI: {} ({}) - {:.0} km", track.callsign, id, dist_km)
-            } else {
-                format!("YAKIN ASKERI HEDEF: {} ({}) - {:.0} km", track.callsign, id, dist_km)
-            };
-            let sev = if is_emerg {
-                ThreatSeverity::Emergency
-            } else {
-                ThreatSeverity::Critical
-            };
+        if let Some((sev, msg)) = self.evaluate_target_alert(&track) {
             self.alerts.upsert_by(
                 AlertItem {
                     timestamp: chrono::Utc::now(),
@@ -666,21 +745,40 @@ impl AppState {
         }
 
         match track.domain {
-            Domain::Air => self.air_targets.upsert_by(track.clone(), |t| t.id == id),
-            Domain::Sea => self.sea_targets.upsert_by(track.clone(), |t| t.id == id),
+            Domain::Air => {
+                self.air_targets.upsert_by(track.clone(), |t| t.id == id);
+                self.air_version = self.air_version.wrapping_add(1);
+            }
+            Domain::Sea => {
+                self.sea_targets.upsert_by(track.clone(), |t| t.id == id);
+                self.sea_version = self.sea_version.wrapping_add(1);
+            }
             _ => {}
         }
         self.targets.upsert_by(track, |t| t.id == id);
+        self.targets_version = self.targets_version.wrapping_add(1);
     }
 
     pub fn prune_stale_targets(&mut self, max_age_secs: i64) {
         let now = chrono::Utc::now();
+        let targets_before = self.targets.len();
+        let air_before = self.air_targets.len();
+        let sea_before = self.sea_targets.len();
         self.targets
             .retain(|t| (now - t.last_seen).num_seconds() <= max_age_secs);
         self.air_targets
             .retain(|t| (now - t.last_seen).num_seconds() <= max_age_secs);
         self.sea_targets
             .retain(|t| (now - t.last_seen).num_seconds() <= max_age_secs);
+        if self.targets.len() != targets_before {
+            self.targets_version = self.targets_version.wrapping_add(1);
+        }
+        if self.air_targets.len() != air_before {
+            self.air_version = self.air_version.wrapping_add(1);
+        }
+        if self.sea_targets.len() != sea_before {
+            self.sea_version = self.sea_version.wrapping_add(1);
+        }
         let active_ids: std::collections::HashSet<&str> =
             self.targets.iter().map(|t| t.id.as_str()).collect();
         self.target_trails
@@ -692,38 +790,48 @@ impl AppState {
         self.cyber_incidents.upsert_by(inc, |c| c.id == id);
     }
 
-    pub fn vessel_list(&self) -> Vec<TargetTrack> {
-        let mut list: Vec<TargetTrack> = self
+    pub fn vessel_sorted_indices(&self) -> Vec<usize> {
+        let mut indices: Vec<usize> = self
             .sea_targets
             .iter()
-            .filter(|t| match self.sea_filter {
-                1 => t.is_military || t.vessel_type.as_deref() == Some("Warship") || t.vessel_type.as_deref() == Some("Savaş Gemisi") || t.callsign.starts_with("TCG") || t.callsign.starts_with("USS") || t.callsign.starts_with("HMS"),
-                2 => t.vessel_type.as_deref() == Some("Coast Guard") || t.vessel_type.as_deref() == Some("Sahil Güvenlik") || t.callsign.starts_with("TCSG") || t.vessel_type.as_deref() == Some("Law Enforcement") || t.vessel_type.as_deref() == Some("SAR"),
-                3 => !t.is_military && !t.callsign.starts_with("TCG") && !t.callsign.starts_with("USS") && !t.callsign.starts_with("HMS") && !t.callsign.starts_with("TCSG") && t.vessel_type.as_deref() != Some("Coast Guard") && t.vessel_type.as_deref() != Some("Sahil Güvenlik") && t.vessel_type.as_deref() != Some("Warship") && t.vessel_type.as_deref() != Some("Savaş Gemisi"),
-                _ => true,
+            .enumerate()
+            .filter_map(|(idx, t)| {
+                let keep = match self.sea_filter {
+                    1 => t.is_military || t.vessel_type.as_deref() == Some("Warship") || t.vessel_type.as_deref() == Some("Savaş Gemisi") || t.callsign.starts_with("TCG") || t.callsign.starts_with("USS") || t.callsign.starts_with("HMS"),
+                    2 => t.vessel_type.as_deref() == Some("Coast Guard") || t.vessel_type.as_deref() == Some("Sahil Güvenlik") || t.callsign.starts_with("TCSG") || t.vessel_type.as_deref() == Some("Law Enforcement") || t.vessel_type.as_deref() == Some("SAR"),
+                    3 => !t.is_military && !t.callsign.starts_with("TCG") && !t.callsign.starts_with("USS") && !t.callsign.starts_with("HMS") && !t.callsign.starts_with("TCSG") && t.vessel_type.as_deref() != Some("Coast Guard") && t.vessel_type.as_deref() != Some("Sahil Güvenlik") && t.vessel_type.as_deref() != Some("Warship") && t.vessel_type.as_deref() != Some("Savaş Gemisi"),
+                    _ => true,
+                };
+                if keep { Some(idx) } else { None }
             })
-            .cloned()
             .collect();
 
+        let targets = &self.sea_targets;
         match self.sea_sort_col {
-            1 => list.sort_by(|a, b| {
+            1 => indices.sort_by(|&ia, &ib| {
+                let a = targets.get(ia).unwrap();
+                let b = targets.get(ib).unwrap();
                 let cmp = a.callsign.cmp(&b.callsign);
                 if self.sea_sort_asc { cmp } else { cmp.reverse() }
             }),
-            2 => list.sort_by(|a, b| {
+            2 => indices.sort_by(|&ia, &ib| {
+                let a = targets.get(ia).unwrap();
+                let b = targets.get(ib).unwrap();
                 let cmp = a.is_military.cmp(&b.is_military);
                 if self.sea_sort_asc { cmp } else { cmp.reverse() }
             }),
-            3 => list.sort_by(|a, b| {
-                let spd_a = a.speed_kts.unwrap_or(-1.0);
-                let spd_b = b.speed_kts.unwrap_or(-1.0);
+            3 => indices.sort_by(|&ia, &ib| {
+                let spd_a = targets.get(ia).and_then(|t| t.speed_kts).unwrap_or(-1.0);
+                let spd_b = targets.get(ib).and_then(|t| t.speed_kts).unwrap_or(-1.0);
                 let cmp = spd_a.partial_cmp(&spd_b).unwrap_or(std::cmp::Ordering::Equal);
                 if self.sea_sort_asc { cmp } else { cmp.reverse() }
             }),
             4 => {
                 let st_lat = self.station_lat;
                 let st_lon = self.station_lon;
-                list.sort_by(|a, b| {
+                indices.sort_by(|&ia, &ib| {
+                    let a = targets.get(ia).unwrap();
+                    let b = targets.get(ib).unwrap();
                     let da = haversine_km(st_lat, st_lon, a.geo.lat, a.geo.lon);
                     let db = haversine_km(st_lat, st_lon, b.geo.lat, b.geo.lon);
                     let cmp = da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal);
@@ -732,7 +840,28 @@ impl AppState {
             }
             _ => {}
         }
-        list
+        indices
+    }
+
+    pub fn ensure_sea_indices(&mut self) -> &[usize] {
+        let key = (self.sea_version, self.sea_filter, self.sea_sort_col, self.sea_sort_asc);
+        if self.cached_sea_key != key {
+            self.cached_sea_indices = self.vessel_sorted_indices();
+            self.cached_sea_key = key;
+        }
+        &self.cached_sea_indices
+    }
+
+    pub fn vessel_at_sorted(&mut self, pos: usize) -> Option<&TargetTrack> {
+        let idx = *self.ensure_sea_indices().get(pos)?;
+        self.sea_targets.get(idx)
+    }
+
+    pub fn vessel_list(&self) -> Vec<TargetTrack> {
+        self.vessel_sorted_indices()
+            .into_iter()
+            .filter_map(|idx| self.sea_targets.get(idx).cloned())
+            .collect()
     }
 
     pub fn upsert_radiation_measurement(&mut self, rad: RadiationMeasurement) {

@@ -139,27 +139,37 @@ pub fn render_air_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
         frame.render_widget(p, card_inner);
     }
 
-    // 3. Hava Trafik Tablosu (Kopyalamadan indeks tabanli filtreleme ve sayfalama)
+    // 3. Hava Trafik Tablosu (Onbellekli indekslerden sifir kopyalama + O(gorunen) sayfalama)
+    state.ensure_air_indices();
     let q_lower = state.search_query.to_lowercase();
-    let sorted_indices = state.aircraft_sorted_indices();
-    let air_list: Vec<(usize, usize)> = sorted_indices
-        .into_iter()
-        .enumerate()
-        .filter(|(_, buf_idx)| {
-            if q_lower.is_empty() {
-                true
-            } else if let Some(t) = state.air_targets.get(*buf_idx) {
-                t.callsign.to_lowercase().contains(&q_lower)
-                    || t.id.to_lowercase().contains(&q_lower)
-                    || t.operator_country.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
-                    || t.operator_branch.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
-                    || t.info.to_lowercase().contains(&q_lower)
-            } else {
-                false
-            }
-        })
-        .collect();
-    let total_air = air_list.len();
+    let filtered_indices: Option<Vec<(usize, usize)>> = if q_lower.is_empty() {
+        None
+    } else {
+        Some(
+            state
+                .cached_air_indices
+                .iter()
+                .enumerate()
+                .filter_map(|(orig_idx, &buf_idx)| {
+                    let t = state.air_targets.get(buf_idx)?;
+                    if t.callsign.to_lowercase().contains(&q_lower)
+                        || t.id.to_lowercase().contains(&q_lower)
+                        || t.operator_country.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
+                        || t.operator_branch.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
+                        || t.info.to_lowercase().contains(&q_lower)
+                    {
+                        Some((orig_idx, buf_idx))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        )
+    };
+    let total_air = match &filtered_indices {
+        Some(v) => v.len(),
+        None => state.cached_air_indices.len(),
+    };
 
     let sort_ind = |col: usize| -> &'static str {
         if state.air_sort_col == col {
@@ -182,7 +192,8 @@ pub fn render_air_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
         h_dist.as_str(),
         "KERTERIZ",
         "KUVVET / OPERATOR",
-        "PLATFORM TIPI",
+        "PLATFORM",
+        "ROTA",
         h_alt.as_str(),
         h_spd.as_str(),
         "SQUAWK",
@@ -227,12 +238,24 @@ pub fn render_air_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
     let st_lat = state.station_lat;
     let st_lon = state.station_lon;
 
-    for (offset, &(orig_idx, buf_idx)) in air_list
-        .iter()
-        .skip(state.air_scroll)
-        .take(rows_height)
-        .enumerate()
-    {
+    let page_items: Vec<(usize, usize)> = match &filtered_indices {
+        Some(v) => v
+            .iter()
+            .skip(state.air_scroll)
+            .take(rows_height)
+            .copied()
+            .collect(),
+        None => state
+            .cached_air_indices
+            .iter()
+            .enumerate()
+            .skip(state.air_scroll)
+            .take(rows_height)
+            .map(|(orig_idx, &buf_idx)| (orig_idx, buf_idx))
+            .collect(),
+    };
+
+    for (offset, (orig_idx, buf_idx)) in page_items.into_iter().enumerate() {
         let Some(track) = state.air_targets.get(buf_idx) else {
             continue;
         };
@@ -313,6 +336,7 @@ pub fn render_air_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
                 .bg(if offset % 2 == 0 { BG_PANEL } else { BG_PRIMARY })
         };
 
+        let route_str = track.destination.as_deref().unwrap_or("-");
         let cells = vec![
             Cell::from(call_display).style(Style::default().add_modifier(Modifier::BOLD)),
             Cell::from(track.id.as_str()),
@@ -321,6 +345,7 @@ pub fn render_air_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
             Cell::from(brg_str),
             Cell::from(branch_str),
             Cell::from(class_str),
+            Cell::from(route_str).style(Style::default().fg(TELETEXT_YELLOW)),
             Cell::from(alt_str),
             Cell::from(spd_str),
             Cell::from(sqwk_str),
@@ -339,16 +364,17 @@ pub fn render_air_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
     }
 
     let widths = [
-        Constraint::Length(13), // Callsign
-        Constraint::Length(8),  // ICAO
-        Constraint::Length(10), // Sınıf
-        Constraint::Length(10), // Mesafe
-        Constraint::Length(9),  // Kerteriz
-        Constraint::Length(19), // Operatör
-        Constraint::Length(22), // Gövde
-        Constraint::Length(9),  // İrtifa
-        Constraint::Length(8),  // Hız
-        Constraint::Length(7),  // Squawk
+        Constraint::Length(12), // Callsign
+        Constraint::Length(7),  // ICAO
+        Constraint::Length(9),  // Sınıf
+        Constraint::Length(9),  // Mesafe
+        Constraint::Length(8),  // Kerteriz
+        Constraint::Length(16), // Operatör
+        Constraint::Length(14), // Gövde
+        Constraint::Length(10), // Rota (IST->JFK)
+        Constraint::Length(7),  // İrtifa
+        Constraint::Length(7),  // Hız
+        Constraint::Length(6),  // Squawk
         Constraint::Min(9),     // Bölge / AOR
     ];
 

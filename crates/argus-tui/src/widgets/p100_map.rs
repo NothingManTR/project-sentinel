@@ -12,10 +12,18 @@ use ratatui::{
     symbols::Marker,
     widgets::{
         canvas::{Canvas, Circle, Context, Line as CanvasLine},
-        Block, Clear,
+        Block, Clear, Widget,
     },
     Frame,
 };
+use std::sync::{Mutex, OnceLock};
+
+type MapCacheKey = (u16, u16, u64, u64, u64, u64, u8, u64, u64);
+
+fn map_base_cache() -> &'static Mutex<Vec<(MapCacheKey, Buffer)>> {
+    static CACHE: OnceLock<Mutex<Vec<(MapCacheKey, Buffer)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Vec::with_capacity(4)))
+}
 
 // =========================================================================
 // BOĞAZLAR VE MARMARA ULTRA-YÜKSEK ÇÖZÜNÜRLÜKLÜ DETAY SEGMENTLERİ
@@ -130,6 +138,7 @@ fn draw_culled_vectors(
     x_max: f64,
     y_min: f64,
     y_max: f64,
+    min_seg_deg: f32,
     color: Color,
 ) {
     let xmin_f = x_min as f32;
@@ -141,23 +150,32 @@ fn draw_culled_vectors(
         if bx2 < xmin_f || bx1 > xmax_f || by2 < ymin_f || by1 > ymax_f {
             continue;
         }
-        for w in pts.windows(2) {
-            let (x1, y1) = w[0];
-            let (x2, y2) = w[1];
-            if (x1 < xmin_f && x2 < xmin_f)
-                || (x1 > xmax_f && x2 > xmax_f)
-                || (y1 < ymin_f && y2 < ymin_f)
-                || (y1 > ymax_f && y2 > ymax_f)
+        if pts.len() < 2 {
+            continue;
+        }
+        let mut prev = pts[0];
+        let last_idx = pts.len() - 1;
+        for (i, &cur) in pts.iter().enumerate().skip(1) {
+            if i != last_idx
+                && (cur.0 - prev.0).abs() < min_seg_deg
+                && (cur.1 - prev.1).abs() < min_seg_deg
             {
                 continue;
             }
-            ctx.draw(&CanvasLine {
-                x1: x1 as f64,
-                y1: y1 as f64,
-                x2: x2 as f64,
-                y2: y2 as f64,
-                color,
-            });
+            if !((prev.0 < xmin_f && cur.0 < xmin_f)
+                || (prev.0 > xmax_f && cur.0 > xmax_f)
+                || (prev.1 < ymin_f && cur.1 < ymin_f)
+                || (prev.1 > ymax_f && cur.1 > ymax_f))
+            {
+                ctx.draw(&CanvasLine {
+                    x1: prev.0 as f64,
+                    y1: prev.1 as f64,
+                    x2: cur.0 as f64,
+                    y2: cur.1 as f64,
+                    color,
+                });
+            }
+            prev = cur;
         }
     }
 }
@@ -255,164 +273,144 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
 
     let st_lon = state.station_lon;
     let st_lat = state.station_lat;
-    let trails_clone = state.target_trails.clone();
-    let jamming_clone = state.gps_jamming_zones.clone();
+    let style_tag: u8 = match state.map_style {
+        MapRenderStyle::HalfBlockTerrain => 0,
+        MapRenderStyle::HalfBlockDarkTile => 1,
+        MapRenderStyle::HalfBlockSatellite => 2,
+        MapRenderStyle::BrailleVector => 3,
+    };
+    let cache_key: MapCacheKey = (
+        area.width,
+        area.height,
+        x_min.to_bits(),
+        x_max.to_bits(),
+        y_min.to_bits(),
+        y_max.to_bits(),
+        style_tag,
+        st_lon.to_bits(),
+        st_lat.to_bits(),
+    );
 
-    // 1. Katman: Yüksek Hassasiyetli (2x4 Sub-Pixel Braille) Resmi Natural Earth Vektör Haritası
-    let canvas = Canvas::default()
-        .marker(Marker::Braille)
-        .x_bounds([x_min, x_max])
-        .y_bounds([y_min, y_max])
-        .block(Block::default().style(Style::default().bg(ocean_bg)))
-        .paint(|ctx| {
-            // A. Adaptif Enlem/Boylam Izgarası
-            let step = if x_half > 60.0 {
-                30.0
-            } else if x_half > 20.0 {
-                10.0
-            } else if x_half > 6.0 {
-                2.0
-            } else if x_half > 1.5 {
-                0.5
-            } else if x_half > 0.4 {
-                0.1
-            } else {
-                0.02
-            };
-
-            let mut curr_lon = (x_min / step).floor() * step;
-            let end_lon = (x_max / step).ceil() * step;
-            while curr_lon <= end_lon {
-                ctx.draw(&CanvasLine {
-                    x1: curr_lon,
-                    y1: y_min,
-                    x2: curr_lon,
-                    y2: y_max,
-                    color: grid_col,
-                });
-                curr_lon += step;
-            }
-
-            let mut curr_lat = (y_min / step).floor() * step;
-            let end_lat = (y_max / step).ceil() * step;
-            while curr_lat <= end_lat {
-                ctx.draw(&CanvasLine {
-                    x1: x_min,
-                    y1: curr_lat,
-                    x2: x_max,
-                    y2: curr_lat,
-                    color: grid_col,
-                });
-                curr_lat += step;
-            }
-
-            // B. Uluslararası Ülke Sınırları (Natural Earth 1:50m — 393 kesintisiz sınır segmenti)
-            draw_culled_vectors(
-                ctx,
-                NE_50M_BORDERS,
-                x_min,
-                x_max,
-                y_min,
-                y_max,
-                border_col,
-            );
-
-            // C. Küresel Göller ve İç Denizler (Natural Earth 1:50m — Hazar, Aral, Van, Büyük Göller vb.)
-            draw_culled_vectors(
-                ctx,
-                NE_50M_LAKES,
-                x_min,
-                x_max,
-                y_min,
-                y_max,
-                lake_col,
-            );
-
-            // D. Küresel Kıyı Şeritleri ve Adalar (Natural Earth 1:50m — 1.429 kesintisiz kıyı segmenti)
-            draw_culled_vectors(
-                ctx,
-                NE_50M_COASTLINES,
-                x_min,
-                x_max,
-                y_min,
-                y_max,
-                coast_col,
-            );
-
-            // E. Bölgesel Ultra-Yüksek Çözünürlüklü Kıyılar ve Adalar (Natural Earth 1:10m — 1.078 segment)
-            if zoom >= 1.2 {
-                draw_culled_vectors(
-                    ctx,
-                    NE_10M_REGIONAL_COASTS,
-                    x_min,
-                    x_max,
-                    y_min,
-                    y_max,
-                    coast_col,
-                );
-            }
-
-            // F. İstanbul Boğazı, Haliç, İzmit Körfezi, Prens Adaları ve Çanakkale Boğazı Mikro-Vektörleri
-            if zoom >= 1.8 {
-                let fine_col = Color::Rgb(115, 235, 205);
-                draw_polyline_f64(ctx, BOGAZ_AVRUPA_VE_HALIC, fine_col);
-                draw_polyline_f64(ctx, BOGAZ_ANADOLU_VE_IZMIT, fine_col);
-                draw_polyline_f64(ctx, CANAKKALE_AVRUPA, fine_col);
-                draw_polyline_f64(ctx, CANAKKALE_ANADOLU, fine_col);
-                draw_polyline_f64(ctx, ADALAR_BUYUKADA, fine_col);
-                draw_polyline_f64(ctx, ADALAR_HEYBELI, fine_col);
-            }
-
-            // G. Taktik Menzil Halkaları
-            let ring_step_km = if zoom >= 20.0 {
-                5.0
-            } else if zoom >= 8.0 {
-                25.0
-            } else if zoom >= 3.0 {
-                100.0
-            } else if zoom >= 1.2 {
-                250.0
-            } else {
-                1000.0
-            };
-            for r_mult in 1..=3 {
-                let deg_radius = (ring_step_km * (r_mult as f64)) / 111.0;
-                if deg_radius < x_half.max(y_half) * 1.4 {
-                    ctx.draw(&Circle {
-                        x: st_lon,
-                        y: st_lat,
-                        radius: deg_radius,
-                        color: Color::Rgb(28, 52, 76),
-                    });
+    // 1 + 2. Katman: Onbellekli Vektor + Kara/Deniz Maskesi (Ayni harita cercevesinde 0.03 ms blitleme!)
+    let mut hit_cache = false;
+    if let Ok(mut guard) = map_base_cache().lock() {
+        if let Some(pos) = guard.iter().position(|(k, _)| *k == cache_key) {
+            let entry = guard.remove(pos);
+            let dst = frame.buffer_mut();
+            for row in 0..area.height {
+                for col in 0..area.width {
+                    dst[(area.x + col, area.y + row)] = entry.1[(col, row)].clone();
                 }
             }
+            guard.push(entry);
+            hit_cache = true;
+        }
+    }
 
-            // H. Canlı Hedef Rota İzleri (Target Trails)
-            if zoom >= 1.2 {
-                for trail in trails_clone.values() {
-                    if trail.len() >= 2 {
-                        draw_polyline_f64(ctx, trail, Color::Rgb(45, 115, 165));
+    if !hit_cache {
+        let local_rect = Rect {
+            x: 0,
+            y: 0,
+            width: area.width,
+            height: area.height,
+        };
+        let mut base_buf = Buffer::empty(local_rect);
+        let min_seg_deg = (((x_max - x_min) / (w * 2.5)).min((y_max - y_min) / (h * 5.0)) * 0.55) as f32;
+
+        let canvas = Canvas::default()
+            .marker(Marker::Braille)
+            .x_bounds([x_min, x_max])
+            .y_bounds([y_min, y_max])
+            .block(Block::default().style(Style::default().bg(ocean_bg)))
+            .paint(|ctx| {
+                // A. Adaptif Enlem/Boylam Izgarası
+                let step = if x_half > 60.0 {
+                    30.0
+                } else if x_half > 20.0 {
+                    10.0
+                } else if x_half > 6.0 {
+                    2.0
+                } else if x_half > 1.5 {
+                    0.5
+                } else if x_half > 0.4 {
+                    0.1
+                } else {
+                    0.02
+                };
+
+                let mut curr_lon = (x_min / step).floor() * step;
+                let end_lon = (x_max / step).ceil() * step;
+                while curr_lon <= end_lon {
+                    ctx.draw(&CanvasLine {
+                        x1: curr_lon,
+                        y1: y_min,
+                        x2: curr_lon,
+                        y2: y_max,
+                        color: grid_col,
+                    });
+                    curr_lon += step;
+                }
+
+                let mut curr_lat = (y_min / step).floor() * step;
+                let end_lat = (y_max / step).ceil() * step;
+                while curr_lat <= end_lat {
+                    ctx.draw(&CanvasLine {
+                        x1: x_min,
+                        y1: curr_lat,
+                        x2: x_max,
+                        y2: curr_lat,
+                        color: grid_col,
+                    });
+                    curr_lat += step;
+                }
+
+                // B. Uluslararası Ülke Sınırları (Natural Earth 1:50m)
+                draw_culled_vectors(ctx, NE_50M_BORDERS, x_min, x_max, y_min, y_max, min_seg_deg, border_col);
+                // C. Küresel Göller ve İç Denizler
+                draw_culled_vectors(ctx, NE_50M_LAKES, x_min, x_max, y_min, y_max, min_seg_deg, lake_col);
+                // D. Küresel Kıyı Şeritleri ve Adalar
+                draw_culled_vectors(ctx, NE_50M_COASTLINES, x_min, x_max, y_min, y_max, min_seg_deg, coast_col);
+                // E. Bölgesel Ultra-Yüksek Çözünürlüklü Kıyılar (1:10m)
+                if zoom >= 1.2 {
+                    draw_culled_vectors(ctx, NE_10M_REGIONAL_COASTS, x_min, x_max, y_min, y_max, min_seg_deg, coast_col);
+                }
+                // F. İstanbul & Çanakkale Boğazları Mikro-Vektörleri
+                if zoom >= 1.8 {
+                    let fine_col = Color::Rgb(115, 235, 205);
+                    draw_polyline_f64(ctx, BOGAZ_AVRUPA_VE_HALIC, fine_col);
+                    draw_polyline_f64(ctx, BOGAZ_ANADOLU_VE_IZMIT, fine_col);
+                    draw_polyline_f64(ctx, CANAKKALE_AVRUPA, fine_col);
+                    draw_polyline_f64(ctx, CANAKKALE_ANADOLU, fine_col);
+                    draw_polyline_f64(ctx, ADALAR_BUYUKADA, fine_col);
+                    draw_polyline_f64(ctx, ADALAR_HEYBELI, fine_col);
+                }
+                // G. Taktik Menzil Halkaları
+                let ring_step_km = if zoom >= 20.0 {
+                    5.0
+                } else if zoom >= 8.0 {
+                    25.0
+                } else if zoom >= 3.0 {
+                    100.0
+                } else if zoom >= 1.2 {
+                    250.0
+                } else {
+                    1000.0
+                };
+                for r_mult in 1..=3 {
+                    let deg_radius = (ring_step_km * (r_mult as f64)) / 111.0;
+                    if deg_radius < x_half.max(y_half) * 1.4 {
+                        ctx.draw(&Circle {
+                            x: st_lon,
+                            y: st_lat,
+                            radius: deg_radius,
+                            color: Color::Rgb(28, 52, 76),
+                        });
                     }
                 }
-            }
+            });
 
-            // I. Canlı ADS-B NIC<5 GPS Karıştırma Halkaları
-            for (lat, lon, rad_deg, _) in jamming_clone.iter() {
-                ctx.draw(&Circle {
-                    x: *lon,
-                    y: *lat,
-                    radius: *rad_deg,
-                    color: Color::Rgb(220, 50, 160),
-                });
-            }
-        });
+        canvas.render(local_rect, &mut base_buf);
 
-    frame.render_widget(canvas, area);
-
-    // 2. Katman: Natural Earth 720x360 Kara/Deniz Maskesi ile Hücre Arka Plan Dolgusu
-    // (Braille kıyı ve sınır çizgilerini silmeden karaları land_bg, okyanusları ocean_bg ile doldurur!)
-    {
-        let buf = frame.buffer_mut();
         let w_f = area.width.max(1) as f64;
         let h_f = area.height.max(1) as f64;
         for row in 0..area.height {
@@ -420,11 +418,25 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
             for col in 0..area.width {
                 let lon = x_min + ((col as f64 + 0.5) / w_f) * (x_max - x_min);
                 if is_land_bitmap(lon, lat) {
-                    let cell = &mut buf[(area.x + col, area.y + row)];
+                    let cell = &mut base_buf[(col, row)];
                     let s = cell.style().bg(land_bg);
                     cell.set_style(s);
                 }
             }
+        }
+
+        let dst = frame.buffer_mut();
+        for row in 0..area.height {
+            for col in 0..area.width {
+                dst[(area.x + col, area.y + row)] = base_buf[(col, row)].clone();
+            }
+        }
+
+        if let Ok(mut guard) = map_base_cache().lock() {
+            if guard.len() >= 4 {
+                guard.remove(0);
+            }
+            guard.push((cache_key, base_buf));
         }
     }
 
@@ -569,10 +581,46 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
     }
 
-    // Deniz Araçları (^) [Katman 2]
+    // 3.5 Katman: Canlı Rota İzleri (Sıfır kopyalama, yalnız zoom >= 1.2 görünümünde) & EW Jamming
+    if zoom >= 1.2 {
+        let buf = frame.buffer_mut();
+        for trail in state.target_trails.values() {
+            if trail.len() < 2 {
+                continue;
+            }
+            for &(tlon, tlat) in &trail[..trail.len() - 1] {
+                if let Some((sx, sy)) = to_screen(tlon, tlat) {
+                    if buf[(sx, sy)].symbol() == " " {
+                        put_overlay_str(buf, area, sx, sy, ".", Color::Rgb(45, 115, 165), None, false);
+                    }
+                }
+            }
+        }
+    }
+    for &(jlat, jlon, _, _) in &state.gps_jamming_zones {
+        if let Some((sx, sy)) = to_screen(jlon, jlat) {
+            put_overlay_str(
+                frame.buffer_mut(),
+                area,
+                sx,
+                sy,
+                "[JAM]",
+                Color::Rgb(220, 50, 160),
+                None,
+                true,
+            );
+        }
+    }
+
+    // Deniz Araçları (^) [Katman 2] — Önbellekli & sıfır kopyalamalı
     if state.geoint_layers & 2 != 0 {
-        let vessels = state.vessel_list();
-        for (idx, track) in vessels.iter().enumerate() {
+        state.ensure_sea_indices();
+        let mut reg_hits: Vec<(u16, u16, u16, usize)> = Vec::with_capacity(256);
+        let buf = frame.buffer_mut();
+        for (sorted_pos, &buf_idx) in state.cached_sea_indices.iter().enumerate() {
+            let Some(track) = state.sea_targets.get(buf_idx) else {
+                continue;
+            };
             if let Some((sx, sy)) = to_screen(track.geo.lon, track.geo.lat) {
                 let is_selected = state.selected_target_id.as_deref() == Some(track.id.as_str());
                 let is_warship = track.is_military || track.callsign.starts_with("TCG");
@@ -583,70 +631,19 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 } else {
                     TELETEXT_GREEN
                 };
-                let text = if is_selected {
-                    format!("[^ {}]", track.callsign)
+                let w_hit: u16 = if is_selected {
+                    let text = format!("[^ {}]", track.callsign);
+                    put_overlay_str(buf, area, sx, sy, &text, col, None, true);
+                    (text.chars().count() as u16).max(1)
                 } else if zoom >= 2.5 || is_warship {
-                    format!("^{}", track.callsign)
+                    let text = format!("^{}", track.callsign);
+                    put_overlay_str(buf, area, sx, sy, &text, col, None, true);
+                    (text.chars().count() as u16).max(1)
                 } else {
-                    "^".to_string()
+                    put_overlay_str(buf, area, sx, sy, "^", col, None, true);
+                    1
                 };
-                put_overlay_str(frame.buffer_mut(), area, sx, sy, &text, col, None, true);
-                let w_hit = (text.chars().count() as u16).max(1);
-                state.hit_tester.register(
-                    Rect {
-                        x: sx,
-                        y: sy,
-                        width: w_hit.min(area.x + area.width - sx),
-                        height: 1,
-                    },
-                    HitTarget::MapTarget(21, idx),
-                );
-            }
-        }
-    }
-
-    // Hava Araçları (+) [Katman 1] — Sıfır kopyalama ile sivil -> askeri -> seçili sırası
-    if state.geoint_layers & 1 != 0 {
-        let air_indices = state.aircraft_sorted_indices();
-        let mut reg_hits: Vec<(u16, u16, u16, usize)> = Vec::with_capacity(1024);
-        let buf = frame.buffer_mut();
-        for &(draw_mil, draw_sel) in &[(false, false), (true, false), (true, true)] {
-            for (sorted_pos, &buf_idx) in air_indices.iter().enumerate() {
-                let Some(track) = state.air_targets.get(buf_idx) else {
-                    continue;
-                };
-                let is_selected = state.selected_target_id.as_deref() == Some(track.id.as_str());
-                let matches_pass = if draw_sel {
-                    is_selected
-                } else {
-                    !is_selected && track.is_military == draw_mil
-                };
-                if !matches_pass {
-                    continue;
-                }
-                if let Some((sx, sy)) = to_screen(track.geo.lon, track.geo.lat) {
-                    let col = if is_selected {
-                        TELETEXT_YELLOW
-                    } else if track.is_military {
-                        Color::Rgb(255, 110, 30)
-                    } else {
-                        TELETEXT_CYAN
-                    };
-                    if is_selected {
-                        let text = format!("[+ {}]", track.callsign);
-                        put_overlay_str(buf, area, sx, sy, &text, col, None, true);
-                        let w_hit = (text.chars().count() as u16).max(1);
-                        reg_hits.push((sx, sy, w_hit, sorted_pos));
-                    } else if zoom >= 2.5 || track.is_military {
-                        let text = format!("+{}", track.callsign);
-                        put_overlay_str(buf, area, sx, sy, &text, col, None, true);
-                        let w_hit = (text.chars().count() as u16).max(1);
-                        reg_hits.push((sx, sy, w_hit, sorted_pos));
-                    } else {
-                        put_overlay_str(buf, area, sx, sy, "+", col, None, true);
-                        reg_hits.push((sx, sy, 1, sorted_pos));
-                    }
-                }
+                reg_hits.push((sx, sy, w_hit, sorted_pos));
             }
         }
         for (sx, sy, w_hit, sorted_pos) in reg_hits {
@@ -657,15 +654,128 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                     width: w_hit.min(area.x + area.width - sx),
                     height: 1,
                 },
-                HitTarget::MapTarget(20, sorted_pos),
+                HitTarget::MapTarget(21, sorted_pos),
             );
         }
     }
 
-    // Uydular (*) [Katman 3]
+    // Hava Araçları (+) [Katman 1] — Tek tarama + önbellekli indeks + hücre bazlı tekilleştirilmiş hit-test
+    if state.geoint_layers & 1 != 0 {
+        state.ensure_air_indices();
+        let gw = area.width as usize;
+        let gh = area.height as usize;
+        let mut cell_hit: Vec<Option<HitTarget>> = vec![None; gw * gh];
+        let mut vis_civ: Vec<(usize, usize, u16, u16)> = Vec::with_capacity(2048);
+        let mut vis_mil: Vec<(usize, usize, u16, u16)> = Vec::with_capacity(256);
+        let mut vis_sel: Option<(usize, usize, u16, u16)> = None;
+
+        for (sorted_pos, &buf_idx) in state.cached_air_indices.iter().enumerate() {
+            let Some(track) = state.air_targets.get(buf_idx) else {
+                continue;
+            };
+            if let Some((sx, sy)) = to_screen(track.geo.lon, track.geo.lat) {
+                if state.selected_target_id.as_deref() == Some(track.id.as_str()) {
+                    vis_sel = Some((sorted_pos, buf_idx, sx, sy));
+                } else if track.is_military {
+                    vis_mil.push((sorted_pos, buf_idx, sx, sy));
+                } else {
+                    vis_civ.push((sorted_pos, buf_idx, sx, sy));
+                }
+            }
+        }
+
+        let buf = frame.buffer_mut();
+        let mut mark_cell = |sx: u16, sy: u16, w: u16, sorted_pos: usize| {
+            let rx = (sx - area.x) as usize;
+            let ry = (sy - area.y) as usize;
+            let max_w = (w as usize).min(gw.saturating_sub(rx));
+            for dx in 0..max_w {
+                cell_hit[ry * gw + rx + dx] = Some(HitTarget::MapTarget(20, sorted_pos));
+            }
+        };
+
+        for (sorted_pos, buf_idx, sx, sy) in vis_civ {
+            let Some(track) = state.air_targets.get(buf_idx) else {
+                continue;
+            };
+            let w = if zoom >= 2.5 {
+                let text = format!("+{}", track.callsign);
+                put_overlay_str(buf, area, sx, sy, &text, TELETEXT_CYAN, None, true);
+                (text.chars().count() as u16).max(1)
+            } else {
+                put_overlay_str(buf, area, sx, sy, "+", TELETEXT_CYAN, None, true);
+                1
+            };
+            mark_cell(sx, sy, w, sorted_pos);
+        }
+
+        let mil_col = Color::Rgb(255, 110, 30);
+        for (sorted_pos, buf_idx, sx, sy) in vis_mil {
+            let Some(track) = state.air_targets.get(buf_idx) else {
+                continue;
+            };
+            let text = format!("+{}", track.callsign);
+            put_overlay_str(buf, area, sx, sy, &text, mil_col, None, true);
+            let w = (text.chars().count() as u16).max(1);
+            mark_cell(sx, sy, w, sorted_pos);
+        }
+
+        if let Some((sorted_pos, buf_idx, sx, sy)) = vis_sel {
+            if let Some(track) = state.air_targets.get(buf_idx) {
+                let text = format!("[+ {}]", track.callsign);
+                put_overlay_str(buf, area, sx, sy, &text, TELETEXT_YELLOW, None, true);
+                let w = (text.chars().count() as u16).max(1);
+                mark_cell(sx, sy, w, sorted_pos);
+            }
+        }
+
+        for ry in 0..gh {
+            let mut rx = 0usize;
+            while rx < gw {
+                if let Some(target) = cell_hit[ry * gw + rx] {
+                    let mut rx2 = rx + 1;
+                    while rx2 < gw && cell_hit[ry * gw + rx2] == Some(target) {
+                        rx2 += 1;
+                    }
+                    state.hit_tester.register(
+                        Rect {
+                            x: area.x + rx as u16,
+                            y: area.y + ry as u16,
+                            width: (rx2 - rx) as u16,
+                            height: 1,
+                        },
+                        target,
+                    );
+                    rx = rx2;
+                } else {
+                    rx += 1;
+                }
+            }
+        }
+    }
+
+    // Uydular (*) ve 90 Dakikalik Yörünge İzi (Ground Track) [Katman 3]
     if state.geoint_layers & 4 != 0 {
+        let sel_sat_idx = if state.selected_domain == 3 {
+            Some(state.selected_row)
+        } else {
+            None
+        };
+        if let Some(sidx) = sel_sat_idx {
+            if let Some(sat) = state.satellites.get(sidx) {
+                let buf = frame.buffer_mut();
+                for &(glon, glat) in &sat.ground_track {
+                    if let Some((gx, gy)) = to_screen(glon, glat) {
+                        if buf[(gx, gy)].symbol() == " " {
+                            put_overlay_str(buf, area, gx, gy, ".", TELETEXT_MAGENTA, None, true);
+                        }
+                    }
+                }
+            }
+        }
         for (idx, sat) in state.satellites.iter().enumerate() {
             if let Some((sx, sy)) = to_screen(sat.lon, sat.lat) {
+                let is_sel = sel_sat_idx == Some(idx);
                 let text = format!("*{}", sat.name);
                 put_overlay_str(
                     frame.buffer_mut(),
@@ -673,7 +783,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                     sx,
                     sy,
                     &text,
-                    TELETEXT_MAGENTA,
+                    if is_sel { TELETEXT_YELLOW } else { TELETEXT_MAGENTA },
                     None,
                     true,
                 );

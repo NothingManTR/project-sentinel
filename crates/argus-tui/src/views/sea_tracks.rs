@@ -129,24 +129,36 @@ pub fn render_sea_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
         frame.render_widget(p, card_inner);
     }
 
+    state.ensure_sea_indices();
     let q_lower = state.search_query.to_lowercase();
-    let raw_sea_list = state.vessel_list();
-    let sea_list: Vec<(usize, _)> = raw_sea_list
-        .into_iter()
-        .enumerate()
-        .filter(|(_, t)| {
-            if q_lower.is_empty() {
-                true
-            } else {
-                t.callsign.to_lowercase().contains(&q_lower)
-                    || t.id.to_lowercase().contains(&q_lower)
-                    || t.operator_country.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
-                    || t.operator_branch.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
-                    || t.info.to_lowercase().contains(&q_lower)
-            }
-        })
-        .collect();
-    let total_sea = sea_list.len();
+    let filtered_indices: Option<Vec<(usize, usize)>> = if q_lower.is_empty() {
+        None
+    } else {
+        Some(
+            state
+                .cached_sea_indices
+                .iter()
+                .enumerate()
+                .filter_map(|(orig_idx, &buf_idx)| {
+                    let t = state.sea_targets.get(buf_idx)?;
+                    if t.callsign.to_lowercase().contains(&q_lower)
+                        || t.id.to_lowercase().contains(&q_lower)
+                        || t.operator_country.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
+                        || t.operator_branch.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
+                        || t.info.to_lowercase().contains(&q_lower)
+                    {
+                        Some((orig_idx, buf_idx))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        )
+    };
+    let total_sea = match &filtered_indices {
+        Some(v) => v.len(),
+        None => state.cached_sea_indices.len(),
+    };
 
     let sort_ind = |col: usize| -> &'static str {
         if state.sea_sort_col == col {
@@ -207,12 +219,27 @@ pub fn render_sea_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
     let st_lat = state.station_lat;
     let st_lon = state.station_lon;
 
-    for (offset, (orig_idx, track)) in sea_list
-        .iter()
-        .skip(state.sea_scroll)
-        .take(rows_height)
-        .enumerate()
-    {
+    let page_items: Vec<(usize, usize)> = match &filtered_indices {
+        Some(v) => v
+            .iter()
+            .skip(state.sea_scroll)
+            .take(rows_height)
+            .copied()
+            .collect(),
+        None => state
+            .cached_sea_indices
+            .iter()
+            .enumerate()
+            .skip(state.sea_scroll)
+            .take(rows_height)
+            .map(|(orig_idx, &buf_idx)| (orig_idx, buf_idx))
+            .collect(),
+    };
+
+    for (offset, (orig_idx, buf_idx)) in page_items.into_iter().enumerate() {
+        let Some(track) = state.sea_targets.get(buf_idx) else {
+            continue;
+        };
         let is_selected =
             offset == 0 || state.selected_target_id.as_deref() == Some(track.id.as_str());
         let is_followed = state.follow_target_id.as_deref() == Some(track.id.as_str());
@@ -284,7 +311,7 @@ pub fn render_sea_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
 
         let cells = vec![
             Cell::from(name_display).style(Style::default().add_modifier(Modifier::BOLD)),
-            Cell::from(track.id.clone()),
+            Cell::from(track.id.as_str()),
             Cell::from(Line::from(status_span)),
             Cell::from(dist_str).style(Style::default().fg(TELETEXT_CYAN)),
             Cell::from(brg_str),
@@ -302,7 +329,7 @@ pub fn render_sea_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
             width: table_area.width.saturating_sub(2),
             height: 1,
         };
-        state.hit_tester.register(row_area, HitTarget::TableRow(21, *orig_idx));
+        state.hit_tester.register(row_area, HitTarget::TableRow(21, orig_idx));
     }
 
     let widths = [
