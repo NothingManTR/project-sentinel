@@ -1,0 +1,21 @@
+[package]
+name = "argus-tui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "argus-osint"
+path = "src/main.rs"
+
+[dependencies]
+argus-core = { workspace = true }
+argus-ingest = { workspace = true }
+tokio = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+parking_lot = { workspace = true }
+clap = { workspace = true }
+rodio = { workspace = true }
+serde_json = { workspace = true }

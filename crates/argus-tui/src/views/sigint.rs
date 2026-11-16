@@ -1,0 +1,402 @@
+use argus_core::mouse::HitTarget;
+use argus_core::state::AppState;
+use argus_core::theme::*;
+use ratatui::{
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{
+        Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Table,
+    },
+    Frame,
+};
+
+pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4),  // Frekans Tuneri & Presetler
+            Constraint::Min(14),    // Gercek KiwiSDR DFT Selalesi & Canli SDR Alici Secici
+            Constraint::Length(11), // Canli EAM Akisi Tablosu
+        ])
+        .split(area);
+
+    // 1. Frekans Tuneri & Preset Butonları (Saf ASCII)
+    let mut preset_spans = Vec::new();
+    let prefix_str = "FREKANS SECIMI: ";
+    preset_spans.push(Span::styled(
+        prefix_str,
+        Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
+    ));
+
+    let mut preset_x = chunks[0].x + 1 + prefix_str.chars().count() as u16;
+    for (idx, preset) in state.radio_presets.iter().enumerate() {
+        let is_current = (state.current_frequency_khz - preset.frequency_khz).abs() < 0.1;
+        let style = if is_current {
+            Style::default()
+                .fg(TELETEXT_BLACK)
+                .bg(TELETEXT_GREEN)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(FG_PRIMARY)
+                .bg(BG_SURFACE)
+                .add_modifier(Modifier::BOLD)
+        };
+        let label = format!(" [{}:{:.0}k {}] ", idx + 1, preset.frequency_khz, preset.mode);
+        let btn_len = label.chars().count() as u16;
+
+        if preset_x + btn_len < chunks[0].x + chunks[0].width {
+            let btn_rect = Rect {
+                x: preset_x,
+                y: chunks[0].y + 2,
+                width: btn_len,
+                height: 1,
+            };
+            state.hit_tester.register(btn_rect, HitTarget::SigintPreset(idx));
+            preset_x += btn_len + 1;
+
+            preset_spans.push(Span::styled(label, style));
+            preset_spans.push(Span::raw(" "));
+        }
+    }
+
+    let current_preset = state
+        .radio_presets
+        .iter()
+        .find(|p| (p.frequency_khz - state.current_frequency_khz).abs() < 0.1);
+    let active_mode = current_preset.map(|p| p.mode.as_str()).unwrap_or("USB");
+
+    let hdr_prefix = "KIWISDR HF TUNER: ";
+    let freq_str = format!(" {:.1} kHz {} ", state.current_frequency_khz, active_mode);
+    let audio_btn_label = if state.is_radio_playing {
+        " [ ALICI: ACIK (Durdurmak icin S / Tikla) ] "
+    } else {
+        " [ ALICI: KAPALI (Canli KiwiSDR Dinlemek icin S / Tikla) ] "
+    };
+
+    let audio_btn_x = chunks[0].x
+        + 1
+        + hdr_prefix.chars().count() as u16
+        + freq_str.chars().count() as u16
+        + 1;
+    let audio_btn_w = audio_btn_label.chars().count() as u16;
+    if audio_btn_x < chunks[0].x + chunks[0].width {
+        let avail_w = (chunks[0].x + chunks[0].width - audio_btn_x).min(audio_btn_w);
+        state.hit_tester.register(
+            Rect {
+                x: audio_btn_x,
+                y: chunks[0].y + 1,
+                width: avail_w,
+                height: 1,
+            },
+            HitTarget::ToggleRadioAudio,
+        );
+    }
+
+    let audio_status = if state.is_radio_playing {
+        Span::styled(
+            audio_btn_label,
+            Style::default()
+                .fg(TELETEXT_BLACK)
+                .bg(TELETEXT_GREEN)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            audio_btn_label,
+            Style::default()
+                .fg(TELETEXT_YELLOW)
+                .bg(BG_HIGHLIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
+    let tuner_p = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(
+                hdr_prefix,
+                Style::default().fg(FG_PRIMARY).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                freq_str,
+                Style::default()
+                    .fg(TELETEXT_CYAN)
+                    .bg(BG_SURFACE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            audio_status,
+            Span::styled(
+                format!(" | {}", state.sdr_status),
+                Style::default().fg(FG_SECONDARY),
+            ),
+        ]),
+        Line::from(preset_spans),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(BORDER_DIM))
+            .title(" [GERCEK ZAMANLI KIWISDR WEBSOCKET (/SND) KISA DALGA ALICISI] ")
+            .style(Style::default().bg(BG_PANEL).fg(FG_PRIMARY)),
+    );
+    frame.render_widget(tuner_p, chunks[0]);
+
+    // 2. Orta Panel: Sol = Gercek DFT Spektrum Selalesi, Sag = Canli KiwiSDR Sunucu Listesi & S-Meter
+    let mid_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(chunks[1]);
+
+    let mut waterfall_lines = Vec::new();
+    waterfall_lines.push(Line::from(vec![Span::styled(
+        format!(
+            " 300Hz        1000Hz      {:.1} kHz ({})      2200Hz       3300Hz",
+            state.current_frequency_khz, active_mode
+        ),
+        Style::default().fg(TELETEXT_CYAN),
+    )]));
+
+    if state.waterfall_data.is_empty() {
+        waterfall_lines.push(Line::from(Span::styled(
+            " [!] Canli DFT spektrumu icin 'S' tusuna basarak KiwiSDR baglantisini acin.",
+            Style::default().fg(FG_MUTED),
+        )));
+    } else {
+        for row in state.waterfall_data.iter().rev().take(9) {
+            let mut row_spans = Vec::new();
+            for val in row.iter() {
+                let (ch, col) = if *val > 180 {
+                    ("#", TELETEXT_RED)
+                } else if *val > 130 {
+                    ("=", TELETEXT_YELLOW)
+                } else if *val > 80 {
+                    ("+", TELETEXT_GREEN)
+                } else if *val > 40 {
+                    (":", TELETEXT_CYAN)
+                } else {
+                    (".", Color::Rgb(22, 36, 56))
+                };
+                row_spans.push(Span::styled(ch, Style::default().fg(col)));
+            }
+            waterfall_lines.push(Line::from(row_spans));
+        }
+    }
+
+    let waterfall_p = Paragraph::new(waterfall_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(BORDER_DIM))
+            .title(format!(
+                " [CANLI PCM DFT SPEKTRUMU | S-METER: {:.1} dBm | {} Hz] ",
+                state.sdr_rssi_dbm, state.sdr_sample_rate
+            ))
+            .style(Style::default().bg(BG_PRIMARY).fg(FG_PRIMARY)),
+    );
+    frame.render_widget(waterfall_p, mid_chunks[0]);
+
+    // Sag: Canli KiwiSDR Sunucu Secici (rx.linkfanel.net uzerinden cekilen gercek alicilar)
+    // Kaydirilabilir tablo: Yukari/Asagi/PgUp/PgDn/Home/End ile gezin, Enter/Tik ile baglan, Tab ile odak degistir
+    let list_area = mid_chunks[1];
+    let total_nodes = state.sdr_nodes.len();
+    if total_nodes > 0 && state.sdr_scroll >= total_nodes {
+        state.sdr_scroll = total_nodes - 1;
+    }
+    let focused = state.sigint_focus == 0;
+
+    // Ic alan: kenarliklar (2) + baslik satiri (1)
+    let visible = (list_area.height.saturating_sub(3) as usize).max(1);
+    let cursor = state.sdr_scroll;
+    let offset = if cursor >= visible { cursor + 1 - visible } else { 0 };
+
+    state.hit_tester.register(list_area, HitTarget::SdrNodeList);
+
+    let node_header = Row::new(
+        ["#", "ALICI (HOST:PORT)", "KONUM", "SNR", "KANAL"]
+            .into_iter()
+            .map(|h| Cell::from(h).style(Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD))),
+    )
+    .style(Style::default().bg(BG_SURFACE));
+
+    let mut node_rows = Vec::new();
+    if total_nodes == 0 {
+        node_rows.push(Row::new(vec![
+            Cell::from(""),
+            Cell::from("rx.linkfanel.net alici dizini sorgulaniyor..."),
+        ]).style(Style::default().fg(FG_MUTED)));
+    } else {
+        for (row_off, (idx, node)) in state
+            .sdr_nodes
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(visible)
+            .enumerate()
+        {
+            let is_active = state.active_sdr_idx == idx;
+            let is_cursor = cursor == idx;
+            let marker = match (is_active, is_cursor) {
+                (true, true) => ">*",
+                (true, false) => " *",
+                (false, true) => "> ",
+                _ => "  ",
+            };
+            let free = node.users_max.saturating_sub(node.users);
+            let snr_col = if node.snr >= 25 {
+                TELETEXT_GREEN
+            } else if node.snr >= 15 {
+                TELETEXT_YELLOW
+            } else {
+                TELETEXT_RED
+            };
+            let style = if is_cursor && focused {
+                Style::default().fg(TELETEXT_BLACK).bg(TELETEXT_CYAN).add_modifier(Modifier::BOLD)
+            } else if is_active {
+                Style::default().fg(TELETEXT_GREEN).bg(BG_HIGHLIGHT).add_modifier(Modifier::BOLD)
+            } else if is_cursor {
+                Style::default().fg(TELETEXT_YELLOW).bg(BG_HIGHLIGHT)
+            } else {
+                Style::default().fg(FG_PRIMARY)
+            };
+            node_rows.push(
+                Row::new(vec![
+                    Cell::from(format!("{}{:>3}", marker, idx + 1)),
+                    Cell::from(node.host_port.clone()),
+                    Cell::from(node.location.clone()),
+                    Cell::from(format!("{}dB", node.snr)).style(Style::default().fg(snr_col)),
+                    Cell::from(format!("{}/{} ({} bos)", node.users, node.users_max, free)),
+                ])
+                .style(style),
+            );
+
+            let ry = list_area.y + 2 + row_off as u16;
+            if ry < list_area.y + list_area.height.saturating_sub(1) {
+                state.hit_tester.register(
+                    Rect {
+                        x: list_area.x + 1,
+                        y: ry,
+                        width: list_area.width.saturating_sub(2),
+                        height: 1,
+                    },
+                    HitTarget::SelectSdrNode(idx),
+                );
+            }
+        }
+    }
+
+    let node_widths = [
+        Constraint::Length(6),
+        Constraint::Percentage(36),
+        Constraint::Percentage(34),
+        Constraint::Length(5),
+        Constraint::Min(10),
+    ];
+    let focus_tag = if focused { "ODAK" } else { "Tab: Odakla" };
+    let nodes_table = Table::new(node_rows, node_widths).header(node_header).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(if focused { BORDER_ACTIVE } else { BORDER_DIM }))
+            .title(format!(
+                " [KIWISDR ALICILARI {}/{} | {} | Ok/PgUp/PgDn: Gez  Enter/Tik: Baglan  N: Sonraki] ",
+                if total_nodes == 0 { 0 } else { cursor + 1 },
+                total_nodes,
+                focus_tag
+            ))
+            .style(Style::default().bg(BG_PANEL).fg(FG_PRIMARY)),
+    );
+    frame.render_widget(nodes_table, list_area);
+
+    if total_nodes > visible {
+        let mut sb_state = ScrollbarState::new(total_nodes).position(cursor);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(TELETEXT_CYAN).bg(BG_SURFACE));
+        frame.render_stateful_widget(sb, list_area, &mut sb_state);
+    }
+
+    // 3. Canlı EAM Akışı Tablosu
+    let header_cells = [
+        "ZAMAN (UTC)",
+        "FREKANS",
+        "ISTASYON",
+        "PREAMBLE",
+        "BOYUT",
+        "MESAJ KOD BLOKLARI",
+        "DURUM",
+    ]
+    .into_iter()
+    .map(|h| Cell::from(h).style(Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD)));
+    let header = Row::new(header_cells).height(1).style(Style::default().bg(BG_SURFACE));
+
+    let mut rows = Vec::new();
+    let mut eams: Vec<_> = state.eam_messages.iter().collect();
+    eams.reverse();
+    let visible_rows = chunks[2].height.saturating_sub(3) as usize;
+    let max_scroll = eams.len().saturating_sub(1);
+    if state.eam_scroll > max_scroll {
+        state.eam_scroll = max_scroll;
+    }
+    let start_idx = state.eam_scroll;
+
+    for (row_offset, msg) in eams.iter().skip(start_idx).take(visible_rows).enumerate() {
+        let actual_idx = start_idx + row_offset;
+        let is_flash = msg.is_flash_override;
+        let row_style = if row_offset == 0 {
+            Style::default()
+                .fg(TELETEXT_YELLOW)
+                .bg(BG_HIGHLIGHT)
+                .add_modifier(Modifier::BOLD)
+        } else if is_flash {
+            Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TELETEXT_CYAN)
+        };
+
+        let status_tag = if is_flash { "FLASH / SKYKING" } else { "STANDART EAM" };
+        let time_prefix = if row_offset == 0 {
+            format!("> {}", msg.timestamp.format("%H:%M:%S"))
+        } else {
+            format!("  {}", msg.timestamp.format("%H:%M:%S"))
+        };
+
+        let cells = vec![
+            Cell::from(time_prefix),
+            Cell::from(format!("{:.1} kHz", msg.frequency_khz)),
+            Cell::from(msg.auth_station.clone()),
+            Cell::from(msg.preamble.clone()),
+            Cell::from(format!("{}B", msg.length_chars)),
+            Cell::from(msg.content.clone()),
+            Cell::from(status_tag),
+        ];
+
+        rows.push(Row::new(cells).style(row_style));
+
+        let row_area = Rect {
+            x: chunks[2].x + 1,
+            y: chunks[2].y + 2 + row_offset as u16,
+            width: chunks[2].width.saturating_sub(2),
+            height: 1,
+        };
+        state.hit_tester.register(row_area, HitTarget::TableRow(30, actual_idx));
+    }
+
+    let widths = [
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(16),
+        Constraint::Length(10),
+        Constraint::Length(7),
+        Constraint::Min(30),
+        Constraint::Length(16),
+    ];
+
+    let table = Table::new(rows, widths).header(header).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(BORDER_DIM))
+            .title(" [EAM.WATCH DOGRULANMIS HFGCS MESAJ AKISI] ")
+            .style(Style::default().bg(BG_PRIMARY).fg(FG_PRIMARY)),
+    );
+    frame.render_widget(table, chunks[2]);
+}

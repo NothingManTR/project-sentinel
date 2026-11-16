@@ -1,0 +1,21 @@
+[station]
+callsign = "ARGUS-STATION"
+name = "Istanbul Tactical OSINT Node"
+default_lat = 41.0082
+default_lon = 28.9784
+auto_ip_location = true
+
+[api_keys]
+shodan_key = "YOUR_SHODAN_API_KEY"
+aisstream_key = "YOUR_AISSTREAM_API_KEY"
+nasa_firms_key = "YOUR_NASA_FIRMS_KEY"
+
+[acled]
+email = "your_email@example.com"
+password = "YOUR_ACLED_PASSWORD"
+token_url = "https://acleddata.com/oauth/token"
+api_url = "https://acleddata.com/api/acled/read"
+
+[audio]
+enabled = true
+volume = 0.5

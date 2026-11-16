@@ -1,0 +1,9 @@
+/target/
+**/*.rs.bk
+*.log
+/argus
+config.toml
+notes.txt
+sentinel_report_*.md
+.~lock.*
+*.wav
