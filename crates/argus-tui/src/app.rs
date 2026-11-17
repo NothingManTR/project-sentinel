@@ -1,29 +1,33 @@
 use crate::audio::{AudioManager, SoundEffect};
+use crate::photo_ui::PhotoRenderCtx;
 use crate::ui::render_main_ui;
 use argus_core::mouse::HitTarget;
 use argus_core::state::AppState;
-use argus_core::types::ActiveView;
+use argus_core::types::{ActiveView, AircraftMediaStatus, Domain, TargetTrack};
 use chrono::Utc;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use parking_lot::RwLock;
 use ratatui::backend::Backend;
 use ratatui::Terminal;
+use ratatui_image::picker::Picker;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub struct App {
     pub state: Arc<RwLock<AppState>>,
     pub audio: AudioManager,
+    pub photo_ctx: PhotoRenderCtx,
     pub should_quit: bool,
     last_click_time: Instant,
     last_click_target: Option<HitTarget>,
 }
 
 impl App {
-    pub fn new(state: Arc<RwLock<AppState>>, audio: AudioManager) -> Self {
+    pub fn new(state: Arc<RwLock<AppState>>, audio: AudioManager, picker: Picker) -> Self {
         Self {
             state,
             audio,
+            photo_ctx: PhotoRenderCtx::new(picker),
             should_quit: false,
             last_click_time: Instant::now(),
             last_click_target: None,
@@ -61,14 +65,53 @@ impl App {
                     last_sdr_status.clone_from(&st.sdr_status);
                     needs_redraw = true;
                 }
+
+                // T-Dossier açıldıysa anında, Inspector'da seçili uçak sabit kaldıysa 350ms sonra fotoğraf çek
+                if let Some(d_icao) = st.dialog_aircraft_icao.clone() {
+                    Self::spawn_aircraft_photo(&self.state, &mut st, &d_icao);
+                } else if !st.is_dialog_open && !matches!(st.selected_domain, 3 | 30 | 50) {
+                    if let Some(t) = st.inspected_target().filter(|t| t.domain == Domain::Air) {
+                        let icao = t.id.to_lowercase();
+                        if self.photo_ctx.last_inspector_icao.as_deref() != Some(&icao) {
+                            self.photo_ctx.last_inspector_icao = Some(icao.clone());
+                            self.photo_ctx.inspector_changed_at = Instant::now();
+                            if let Some(cached) = st.aircraft_photo_cache.get(&icao).cloned() {
+                                if cached.image_bytes.is_some() {
+                                    st.aircraft_media_status = AircraftMediaStatus::Ready(cached);
+                                } else {
+                                    st.aircraft_media_status = AircraftMediaStatus::NotFound {
+                                        icao,
+                                        registration: cached.registration,
+                                        reason: cached.note,
+                                    };
+                                }
+                                needs_redraw = true;
+                            }
+                        } else if self.photo_ctx.inspector_changed_at.elapsed()
+                            >= Duration::from_millis(350)
+                            && !st.aircraft_photo_cache.contains_key(&icao)
+                            && !st.inflight_photo_icaos.contains(&icao)
+                        {
+                            Self::spawn_aircraft_photo(&self.state, &mut st, &icao);
+                            needs_redraw = true;
+                        }
+                    }
+                }
             }
 
             if needs_redraw || last_redraw.elapsed() >= Duration::from_millis(500) {
+                let clear_before_draw = {
+                    let mut st = self.state.write();
+                    std::mem::take(&mut st.force_terminal_clear)
+                };
+                if clear_before_draw {
+                    terminal.clear()?;
+                }
                 terminal.draw(|frame| {
                     let mut lock = self.state.write();
-                    render_main_ui(frame, &mut lock);
+                    render_main_ui(frame, &mut lock, &mut self.photo_ctx);
                 })?;
-                needs_redraw = false;
+                needs_redraw = self.state.read().force_terminal_clear;
                 last_redraw = Instant::now();
             }
 
@@ -160,10 +203,18 @@ impl App {
                 KeyCode::Esc => {
                     st.search_query.clear();
                     st.is_search_active = false;
+                    if st.active_view == ActiveView::AirTracks {
+                        st.air_scroll = 0;
+                        st.sync_air_selection();
+                    }
                     self.audio.play(SoundEffect::Click);
                 }
                 KeyCode::Enter => {
                     st.is_search_active = false;
+                    if st.active_view == ActiveView::AirTracks {
+                        st.air_scroll = 0;
+                        st.sync_air_selection();
+                    }
                     self.audio.play(SoundEffect::Blip);
                 }
                 KeyCode::Backspace => {
@@ -190,7 +241,12 @@ impl App {
         match code {
             KeyCode::F(1) => { st.set_view(ActiveView::Dashboard); self.audio.play(SoundEffect::Click); return; }
             KeyCode::F(2) => { st.set_view(ActiveView::Geoint); self.audio.play(SoundEffect::Click); return; }
-            KeyCode::F(3) => { st.set_view(ActiveView::AirTracks); self.audio.play(SoundEffect::Click); return; }
+            KeyCode::F(3) => {
+                st.set_view(ActiveView::AirTracks);
+                st.sync_air_selection();
+                self.audio.play(SoundEffect::Click);
+                return;
+            }
             KeyCode::F(4) => { st.set_view(ActiveView::SeaTracks); self.audio.play(SoundEffect::Click); return; }
             KeyCode::F(5) => {
                 if st.active_view == ActiveView::Notepad {
@@ -229,16 +285,34 @@ impl App {
                     }
                     KeyCode::Char(c) if ('1'..='6').contains(&c) => {
                         Self::apply_air_filter(&mut st, (c as usize) - ('1' as usize));
+                        st.sync_air_selection();
                         self.audio.play(SoundEffect::Click);
                         return;
                     }
-                    KeyCode::Up => { st.air_scroll = st.air_scroll.saturating_sub(1); return; }
-                    KeyCode::Down => { st.air_scroll = st.air_scroll.saturating_add(1); return; }
-                    KeyCode::PageUp => { st.air_scroll = st.air_scroll.saturating_sub(10); return; }
-                    KeyCode::PageDown => { st.air_scroll = st.air_scroll.saturating_add(10); return; }
+                    KeyCode::Up => {
+                        st.air_scroll = st.air_scroll.saturating_sub(1);
+                        st.sync_air_selection();
+                        return;
+                    }
+                    KeyCode::Down => {
+                        st.air_scroll = st.air_scroll.saturating_add(1);
+                        st.sync_air_selection();
+                        return;
+                    }
+                    KeyCode::PageUp => {
+                        st.air_scroll = st.air_scroll.saturating_sub(10);
+                        st.sync_air_selection();
+                        return;
+                    }
+                    KeyCode::PageDown => {
+                        st.air_scroll = st.air_scroll.saturating_add(10);
+                        st.sync_air_selection();
+                        return;
+                    }
                     KeyCode::Enter => {
                         let idx = st.air_scroll;
-                        if Self::open_item_dossier(&mut st, 20, idx) {
+                        if let Some(t) = st.aircraft_at_visible(idx).cloned() {
+                            Self::open_air_target_dossier(&mut st, &t);
                             self.audio.play(SoundEffect::Blip);
                         }
                         return;
@@ -696,6 +770,7 @@ impl App {
             }
             KeyCode::Char('h') | KeyCode::Char('H') => {
                 st.set_view(ActiveView::AirTracks);
+                st.sync_air_selection();
                 self.audio.play(SoundEffect::Click);
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -783,6 +858,12 @@ impl App {
             }
             KeyCode::Down if st.active_view != ActiveView::Sigint => {
                 st.map_center_lat = (st.map_center_lat - 2.5 / st.map_zoom).clamp(-85.0, 85.0);
+            }
+            KeyCode::Char('o') | KeyCode::Char('O') => {
+                if let Some(t) = st.inspected_target().filter(|t| t.domain == Domain::Air) {
+                    Self::open_air_target_dossier(&mut st, &t);
+                    self.audio.play(SoundEffect::Blip);
+                }
             }
             KeyCode::Enter => {
                 let active = st.active_tile;
@@ -1236,41 +1317,87 @@ impl App {
         }
     }
 
+    fn spawn_aircraft_photo(state_arc: &Arc<RwLock<AppState>>, st: &mut AppState, icao: &str) {
+        let key = icao.trim().to_lowercase();
+        if key.len() < 4 {
+            return;
+        }
+        if let Some(cached) = st.aircraft_photo_cache.get(&key).cloned() {
+            if cached.image_bytes.is_some() {
+                st.aircraft_media_status = AircraftMediaStatus::Ready(cached);
+            } else {
+                st.aircraft_media_status = AircraftMediaStatus::NotFound {
+                    icao: key,
+                    registration: cached.registration,
+                    reason: cached.note,
+                };
+            }
+            return;
+        }
+        if !st.inflight_photo_icaos.insert(key.clone()) {
+            return;
+        }
+        st.aircraft_media_status = AircraftMediaStatus::Loading { icao: key.clone() };
+        let state_arc = Arc::clone(state_arc);
+        tokio::spawn(async move {
+            let entry = argus_ingest::aircraft_photo::fetch_aircraft_photo(&key).await;
+            let mut lock = state_arc.write();
+            lock.inflight_photo_icaos.remove(&key);
+            let has_img = entry.image_bytes.is_some();
+            lock.store_aircraft_photo(entry.clone());
+            if has_img {
+                lock.aircraft_media_status = AircraftMediaStatus::Ready(entry);
+            } else {
+                lock.aircraft_media_status = AircraftMediaStatus::NotFound {
+                    icao: key,
+                    registration: entry.registration,
+                    reason: entry.note,
+                };
+            }
+            lock.total_events_received = lock.total_events_received.wrapping_add(1);
+        });
+    }
+
+    fn open_air_target_dossier(st: &mut AppState, t: &TargetTrack) {
+        st.selected_target_id = Some(t.id.clone());
+        let alt_m = t.geo.alt_m.unwrap_or(0.0);
+        let alt_ft = alt_m * 3.28084;
+        let alt_fl = alt_ft / 100.0;
+        let spd_kts = t.speed_kts.unwrap_or(0.0);
+        let sqwk = t.squawk.as_deref().unwrap_or("----");
+
+        st.open_dialog(
+            format!("T-DOSSIER: {} [{}]", t.callsign, t.id),
+            vec![
+                format!("=== HAVA HEDEFI VE TRANSONDER TELEMETRISI: {} ===", t.callsign),
+                format!("ICAO 24-Bit Hex Kodu : {}", t.id),
+                format!("Telsiz Cagri Kodu     : {}", t.callsign),
+                format!("Hedef Siniflandirma   : {}", if t.is_military { "[ASKERI GOREV PLATFORMU]" } else { "[SIVIL TICARI HAVACILIK]" }),
+                format!("Kuvvet / Birlik       : {}", t.operator_branch.as_deref().unwrap_or("Sivil Hava Yollari")),
+                format!("Platform / Govde Tipi : {}", t.airframe_or_vessel_class.as_deref().unwrap_or("Standart Yolcu/Kargo Govdesi")),
+                format!("Tescil / Bayrak Ulke  : {}", t.operator_country.as_deref().unwrap_or("Bilinmeyen Ulke")),
+                format!("Anlik Konum (GPS)     : {:.4}° N, {:.4}° E", t.geo.lat, t.geo.lon),
+                format!("Barometrik Irtifa     : FL{:.0} ({:.0} metre / {:.0} feet)", alt_fl, alt_m, alt_ft),
+                format!("Yer Hizi (Ground Spd) : {:.0} Knot ({:.0} km/h)", spd_kts, spd_kts * 1.852),
+                format!("Dikey Tirmanis Hizi   : {:+0.0} ft/min", t.vertical_rate_fpm.unwrap_or(0.0)),
+                format!("Ucus Rotasi (Track)   : {:.1}°", t.heading_deg.unwrap_or(0.0)),
+                format!("Mode-S Squawk Kodu    : {}", sqwk),
+                format!("Squawk Durum Analizi  : {}", match sqwk { "7700" => "[!] ACIL DURUM (EMERGENCY DECLARED)", "7600" => "[!] TELSİZ KAYBI (RADIO FAILURE)", "7500" => "[!] UCAK KACIRILMA (HIJACK ALARM)", _ => "Standart IFR/VFR Radar Kontrol" }),
+                "--- STRATEJIK GOREV VE TEHDIT DEGERLENDIRMESI ---".to_string(),
+                format!("Taktik Misyon Analizi : {}", if t.is_military { "Elektronik Harp (EW), Taktik Nakliye veya Muharip Hava Devriyesi (CAP)" } else { "Ticari Tarifeli Sefer / Uluslararasi Sivil Ucus" }),
+                "Sinyal Bütünlüğü      : ADS-B 1090MHz Mode-S Dogrulandi (CRC OK)".to_string(),
+                format!("Son Gorulme (ZULU)    : {}", t.last_seen.format("%Y-%m-%d %H:%M:%S UTC")),
+            ],
+        );
+        st.dialog_aircraft_icao = Some(t.id.clone());
+    }
+
     /// Derin, teknik ve GitHub-star seviyesinde çok bölümlü istihbarat dosyası açar
     fn open_item_dossier(st: &mut AppState, tile_idx: usize, row_idx: usize) -> bool {
         // 1. AirTracks Ekranından Tıklanan Uçak (tile_idx == 20)
         if tile_idx == 20 {
             if let Some(t) = st.aircraft_at_sorted(row_idx).cloned() {
-                st.selected_target_id = Some(t.id.clone());
-                let alt_m = t.geo.alt_m.unwrap_or(0.0);
-                let alt_ft = alt_m * 3.28084;
-                let alt_fl = alt_ft / 100.0;
-                let spd_kts = t.speed_kts.unwrap_or(0.0);
-                let sqwk = t.squawk.as_deref().unwrap_or("----");
-
-                st.open_dialog(
-                    format!("T-DOSSIER: {} [{}]", t.callsign, t.id),
-                    vec![
-                        format!("=== HAVA HEDEFI VE TRANSONDER TELEMETRISI: {} ===", t.callsign),
-                        format!("ICAO 24-Bit Hex Kodu : {}", t.id),
-                        format!("Telsiz Cagri Kodu     : {}", t.callsign),
-                        format!("Hedef Siniflandirma   : {}", if t.is_military { "[ASKERI GOREV PLATFORMU]" } else { "[SIVIL TICARI HAVACILIK]" }),
-                        format!("Kuvvet / Birlik       : {}", t.operator_branch.as_deref().unwrap_or("Sivil Hava Yollari")),
-                        format!("Platform / Govde Tipi : {}", t.airframe_or_vessel_class.as_deref().unwrap_or("Standart Yolcu/Kargo Govdesi")),
-                        format!("Tescil / Bayrak Ulke  : {}", t.operator_country.as_deref().unwrap_or("Bilinmeyen Ulke")),
-                        format!("Anlik Konum (GPS)     : {:.4}° N, {:.4}° E", t.geo.lat, t.geo.lon),
-                        format!("Barometrik Irtifa     : FL{:.0} ({:.0} metre / {:.0} feet)", alt_fl, alt_m, alt_ft),
-                        format!("Yer Hizi (Ground Spd) : {:.0} Knot ({:.0} km/h)", spd_kts, spd_kts * 1.852),
-                        format!("Dikey Tirmanis Hizi   : {:+0.0} ft/min", t.vertical_rate_fpm.unwrap_or(0.0)),
-                        format!("Ucus Rotasi (Track)   : {:.1}°", t.heading_deg.unwrap_or(0.0)),
-                        format!("Mode-S Squawk Kodu    : {}", sqwk),
-                        format!("Squawk Durum Analizi  : {}", match sqwk { "7700" => "[!] ACIL DURUM (EMERGENCY DECLARED)", "7600" => "[!] TELSİZ KAYBI (RADIO FAILURE)", "7500" => "[!] UCAK KACIRILMA (HIJACK ALARM)", _ => "Standart IFR/VFR Radar Kontrol" }),
-                        "--- STRATEJIK GOREV VE TEHDIT DEGERLENDIRMESI ---".to_string(),
-                        format!("Taktik Misyon Analizi : {}", if t.is_military { "Elektronik Harp (EW), Taktik Nakliye veya Muharip Hava Devriyesi (CAP)" } else { "Ticari Tarifeli Sefer / Uluslararasi Sivil Ucus" }),
-                        "Sinyal Bütünlüğü      : ADS-B 1090MHz Mode-S Dogrulandi (CRC OK)".to_string(),
-                        format!("Son Gorulme (ZULU)    : {}", t.last_seen.format("%Y-%m-%d %H:%M:%S UTC")),
-                    ],
-                );
+                Self::open_air_target_dossier(st, &t);
                 return true;
             }
         }
@@ -1323,7 +1450,11 @@ impl App {
                 }
             }
             2 => {
-                if let Some(t) = st.targets.get(row_idx) {
+                if let Some(t) = st.targets.get(row_idx).cloned() {
+                    if t.domain == Domain::Air {
+                        Self::open_air_target_dossier(st, &t);
+                        return true;
+                    }
                     let domain_name = match t.domain {
                         argus_core::types::Domain::Air => "HAVA (ADS-B)",
                         argus_core::types::Domain::Sea => "DENİZ (AIS)",

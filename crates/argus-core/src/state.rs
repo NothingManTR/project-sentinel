@@ -113,6 +113,15 @@ pub struct AppState {
     pub dialog_title: String,
     pub dialog_content: Vec<String>,
     pub dialog_scroll: u16,
+    pub dialog_aircraft_icao: Option<String>,
+
+    // Canlı Uçak Fotoğrafı & Önbellek (Inspector + Dossier ortak)
+    pub aircraft_media_status: AircraftMediaStatus,
+    pub aircraft_photo_cache: HashMap<String, AircraftPhotoEntry>,
+    pub aircraft_photo_order: VecDeque<String>,
+    pub inflight_photo_icaos: HashSet<String>,
+    pub pending_photo_slot: Option<(String, (u16, u16, u16, u16))>,
+    pub force_terminal_clear: bool,
     
     // Harita Görünüm Parametreleri
     pub map_center_lon: f64,
@@ -245,6 +254,13 @@ impl AppState {
             dialog_title: String::new(),
             dialog_content: Vec::new(),
             dialog_scroll: 0,
+            dialog_aircraft_icao: None,
+            aircraft_media_status: AircraftMediaStatus::Idle,
+            aircraft_photo_cache: HashMap::new(),
+            aircraft_photo_order: VecDeque::new(),
+            inflight_photo_icaos: HashSet::new(),
+            pending_photo_slot: None,
+            force_terminal_clear: false,
             map_center_lon: lon,
             map_center_lat: lat,
             map_zoom: 1.0,
@@ -517,6 +533,32 @@ impl AppState {
     pub fn aircraft_at_sorted(&mut self, pos: usize) -> Option<&TargetTrack> {
         let idx = *self.ensure_air_indices().get(pos)?;
         self.air_targets.get(idx)
+    }
+
+    pub fn aircraft_at_visible(&mut self, pos: usize) -> Option<&TargetTrack> {
+        let q = self.search_query.to_lowercase();
+        self.ensure_air_indices();
+        if q.is_empty() {
+            let idx = *self.cached_air_indices.get(pos)?;
+            return self.air_targets.get(idx);
+        }
+        let mut match_idx = 0usize;
+        for &buf_idx in &self.cached_air_indices {
+            if let Some(t) = self.air_targets.get(buf_idx) {
+                if t.callsign.to_lowercase().contains(&q)
+                    || t.id.to_lowercase().contains(&q)
+                    || t.operator_country.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                    || t.operator_branch.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                    || t.info.to_lowercase().contains(&q)
+                {
+                    if match_idx == pos {
+                        return Some(t);
+                    }
+                    match_idx += 1;
+                }
+            }
+        }
+        None
     }
 
     pub fn aircraft_list(&self) -> Vec<TargetTrack> {
@@ -917,12 +959,53 @@ impl AppState {
         self.dialog_title = title.into();
         self.dialog_content = lines;
         self.dialog_scroll = 0;
+        self.dialog_aircraft_icao = None;
         self.is_dialog_open = true;
     }
 
     pub fn close_dialog(&mut self) {
         self.is_dialog_open = false;
         self.dialog_content.clear();
+        if self.dialog_aircraft_icao.take().is_some() {
+            self.force_terminal_clear = true;
+        }
+    }
+
+    pub fn store_aircraft_photo(&mut self, entry: AircraftPhotoEntry) {
+        let key = entry.icao.to_lowercase();
+        if !self.aircraft_photo_cache.contains_key(&key) {
+            if self.aircraft_photo_order.len() >= 48 {
+                if let Some(old_k) = self.aircraft_photo_order.pop_front() {
+                    self.aircraft_photo_cache.remove(&old_k);
+                }
+            }
+            self.aircraft_photo_order.push_back(key.clone());
+        }
+        self.aircraft_photo_cache.insert(key, entry);
+    }
+
+    pub fn sync_air_selection(&mut self) {
+        self.selected_domain = 20;
+        self.selected_row = self.air_scroll;
+        self.selected_target_id = self.aircraft_at_visible(self.air_scroll).map(|t| t.id.clone());
+    }
+
+    pub fn inspected_target(&mut self) -> Option<TargetTrack> {
+        self.selected_target_id
+            .as_ref()
+            .and_then(|id| {
+                self.air_targets
+                    .iter()
+                    .find(|t| &t.id == id)
+                    .or_else(|| self.sea_targets.iter().find(|t| &t.id == id))
+                    .or_else(|| self.targets.iter().find(|t| &t.id == id))
+            })
+            .cloned()
+            .or_else(|| match self.selected_domain {
+                20 => self.aircraft_at_sorted(self.selected_row).cloned(),
+                21 => self.vessel_at_sorted(self.selected_row).cloned(),
+                _ => self.aircraft_at_sorted(0).cloned(),
+            })
     }
 
     pub fn load_notepad(&mut self) {

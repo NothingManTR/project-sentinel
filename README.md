@@ -40,7 +40,7 @@ Sistemde sentetik veri uretimi veya yapay simulasyon bulunmaz; tum telemetri dog
 | Disiplin | Kisayol | Canli Veri Kaynaklari & Protokoller |
 | :--- | :--- | :--- |
 | **GEOINT (Harita)** | `F2` | Natural Earth `1:50m` & `1:10m` vektor harita, `720x360` kara/deniz maskesi, `http://127.0.0.1:8090` Canvas Leaflet Web Harita (15.000+ hedef, AOR & FIRMS/Safecast/GPS-JAM katmanlari) |
-| **AIRINT (Hava)** | `F3` / `H` | Coklu kaynak kuresel ADS-B (`opendata.adsb.fi`, `api.adsb.lol`, 20 bolgeli kuresel mozaik + `OpenSky`), AOR siniflandirmasi, `ROTA` kolonu ve askeri filo tespiti |
+| **AIRINT (Hava)** | `F3` / `H` | Coklu kaynak kuresel ADS-B (`opendata.adsb.fi`, `api.adsb.lol`, 20 bolgeli kuresel mozaik + `OpenSky`), AOR siniflandirmasi, `ROTA` kolonu, askeri filo tespiti ve terminal ici canli ucak fotografi (`Planespotters` + `hexdb.io`, `Sixel` / `Halfblocks`) |
 | **SEAINT (Deniz)** | `F4` / `D` | Kuresel `AISStream` WebSocket (`10.000` gemi kapasitesi), MID bayrak devleti cozumlemesi, stratejik bogaz/kanal alarm koridorlari ve harp gemisi tespiti |
 | **SIGINT (Radyo/EAM)** | `F5` | Canli `KiwiSDR` (`/kiwi/<ts>/SND`) PCM ses akisi, serbest frekans (`F`), `USB/LSB/AM/CW` mod (`U`), alici kilidi (`L`), canli `.wav` kayit (`V`), 60-bin DFT selalesi, 300 alici ve `eam.watch` EAM/SKYKING |
 | **OSINT (Haber)** | `F6` | Kuresel kriz ve acik kaynak haber RSS akislari + Denetci paneli |
@@ -87,7 +87,7 @@ cargo build --release
 - **`/`**: Kuresel arama ve filtreleme
 - **Harita (`F1`/`F2`/Mini-Harita)**: Sol tikla surukle (Pan), fare tekerlegi veya `+`/`-` (Zoom), hedefe tek tik (Sag Denetci), cift tik veya `Enter` (Tam Dosya)
 - **`G` / `F` / `B`**: Haritada Odakla / Otomatik Takip Kilidi / Izleme Listesi (`Watchlist`)
-- **Hava Radari (`F3`)**: `1` Kuresel Tumu, `2` CENTCOM Tumu, `3` CENTCOM Askeri, `4` Kuresel Askeri, `5` TR/EUCOM, `6` Acil Squawk
+- **Hava Radari (`F3`)**: `1` Kuresel Tumu, `2` CENTCOM Tumu, `3` CENTCOM Askeri, `4` Kuresel Askeri, `5` TR/EUCOM, `6` Acil Squawk, `Enter` / `O` (Fotografli Tam Ucak Dosyasi)
 - **SIGINT (`F5`)**: `S` (Canli KiwiSDR Sesini Ac/Kapat), `1`–`9` (HF Frekans Secimi), `F` (Serbest kHz Frekansi Gir), `U` (Mod: `USB`/`LSB`/`AM`/`CW`), `L` (Oto-Alici Degistirmeyi Kilitle/Ac), `V` (`recordings/` Altina `.wav` Kayit Ac/Kapat), `/` (Alici Arama), `Yukari/Asagi/PgUp/PgDn` + `Enter` (300 Alicida Gez & Baglan), `Tab` (Alici/EAM Odagi), `N` (Sonraki Alici)
 - **MASINT (`F9`)**: `1`–`3` veya sekme tiklama (`Sismik`, `CBRN & Termal`, `Uzay Havasi`)
 - **`W`**: Tarayicida canli `http://127.0.0.1:8090` Canvas Leaflet web haritasini ac

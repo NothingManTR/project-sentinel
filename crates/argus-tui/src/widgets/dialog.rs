@@ -1,11 +1,12 @@
+use crate::widgets::inspector::render_aircraft_photo_box;
 use argus_core::mouse::HitTarget;
 use argus_core::state::AppState;
 use argus_core::theme::*;
 use ratatui::{
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
@@ -14,8 +15,11 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
         return;
     }
 
-    let dialog_w = 86.min(screen_area.width.saturating_sub(4));
-    let dialog_h = 26.min(screen_area.height.saturating_sub(4));
+    let has_photo = state.dialog_aircraft_icao.is_some();
+    let max_w = if has_photo { 114 } else { 86 };
+    let max_h = if has_photo { 30 } else { 26 };
+    let dialog_w = max_w.min(screen_area.width.saturating_sub(4));
+    let dialog_h = max_h.min(screen_area.height.saturating_sub(4));
     let dialog_x = (screen_area.width.saturating_sub(dialog_w)) / 2;
     let dialog_y = (screen_area.height.saturating_sub(dialog_h)) / 2;
 
@@ -88,7 +92,7 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
         height: content_area.height.saturating_sub(2),
     };
 
-    let lines: Vec<Line> = state
+    let mut lines: Vec<Line> = state
         .dialog_content
         .iter()
         .map(|s| {
@@ -113,8 +117,55 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
         })
         .collect();
 
-    let text_p = Paragraph::new(lines).scroll((state.dialog_scroll, 0));
-    frame.render_widget(text_p, text_area);
+    if let Some(icao) = state.dialog_aircraft_icao.clone() {
+        let key = icao.to_lowercase();
+        if let Some(entry) = state.aircraft_photo_cache.get(&key) {
+            if entry.registration.is_some()
+                || entry.aircraft_type.is_some()
+                || entry.registered_owner.is_some()
+            {
+                lines.push(Line::from(Span::styled(
+                    "--- TESCIL & SPOTTER VERITABANI ---",
+                    Style::default().fg(TELETEXT_CYAN).add_modifier(Modifier::BOLD),
+                )));
+                if let Some(reg) = &entry.registration {
+                    lines.push(Line::from(Span::styled(
+                        format!("Kuyruk Tescili (Reg)  : {}", reg),
+                        Style::default().fg(TELETEXT_YELLOW),
+                    )));
+                }
+                if let Some(typ) = &entry.aircraft_type {
+                    lines.push(Line::from(Span::styled(
+                        format!("Dogrulanmis Govde     : {}", typ),
+                        Style::default().fg(FG_PRIMARY),
+                    )));
+                }
+                if let Some(own) = &entry.registered_owner {
+                    lines.push(Line::from(Span::styled(
+                        format!("Kayitli Isletmeci     : {}", own),
+                        Style::default().fg(FG_PRIMARY),
+                    )));
+                }
+            }
+        }
+        if text_area.width >= 56 && text_area.height >= 8 {
+            let split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .split(text_area);
+            let text_p = Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .scroll((state.dialog_scroll, 0));
+            frame.render_widget(text_p, split[0]);
+            render_aircraft_photo_box(frame, split[1], state, &icao);
+        } else {
+            let text_p = Paragraph::new(lines).scroll((state.dialog_scroll, 0));
+            frame.render_widget(text_p, text_area);
+        }
+    } else {
+        let text_p = Paragraph::new(lines).scroll((state.dialog_scroll, 0));
+        frame.render_widget(text_p, text_area);
+    }
 
     let btn_width = 41.min(dialog_area.width.saturating_sub(4));
     let btn_area = Rect {

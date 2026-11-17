@@ -378,3 +378,31 @@ impl Default for CalcState {
         }
     }
 }
+
+/// İnternetten çekilen canlı uçak fotoğrafı ve tescil özeti
+#[derive(Debug, Clone)]
+pub struct AircraftPhotoEntry {
+    pub icao: String,
+    pub registration: Option<String>,
+    pub aircraft_type: Option<String>,
+    pub registered_owner: Option<String>,
+    pub photographer: Option<String>,
+    pub source: String,
+    pub image_bytes: Option<std::sync::Arc<Vec<u8>>>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum AircraftMediaStatus {
+    #[default]
+    Idle,
+    Loading {
+        icao: String,
+    },
+    Ready(AircraftPhotoEntry),
+    NotFound {
+        icao: String,
+        registration: Option<String>,
+        reason: String,
+    },
+}

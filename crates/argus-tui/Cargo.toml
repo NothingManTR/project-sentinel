@@ -12,6 +12,8 @@ argus-core = { workspace = true }
 argus-ingest = { workspace = true }
 tokio = { workspace = true }
 ratatui = { workspace = true }
+ratatui-image = { workspace = true }
+image = { workspace = true }
 crossterm = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }

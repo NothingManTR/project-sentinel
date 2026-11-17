@@ -2,13 +2,114 @@ use argus_core::geo::{bearing_sector_tr, haversine_km, haversine_nm, initial_bea
 use argus_core::mouse::HitTarget;
 use argus_core::state::AppState;
 use argus_core::theme::*;
+use argus_core::types::{AircraftMediaStatus, Domain};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
+
+/// Seçili veya dossier modundaki uçak için canlı fotoğraf kutusunu ve kredi/durum bilgisini çizer.
+/// Görselin kendisi frame sonunda `PhotoRenderCtx::render_active_slot` ile piksel olarak basılır.
+pub fn render_aircraft_photo_box(frame: &mut Frame, area: Rect, state: &mut AppState, icao: &str) {
+    if area.width < 10 || area.height < 4 {
+        return;
+    }
+
+    let key = icao.to_lowercase();
+    let cached = state.aircraft_photo_cache.get(&key).cloned();
+    let active_ready = match &state.aircraft_media_status {
+        AircraftMediaStatus::Ready(e) if e.icao.eq_ignore_ascii_case(&key) => Some(e.clone()),
+        _ => None,
+    };
+    let entry_opt = cached.or(active_ready);
+
+    let title = if let Some(e) = &entry_opt {
+        if let Some(reg) = &e.registration {
+            format!(" [ {} | {} ] ", reg, e.icao.to_uppercase())
+        } else {
+            format!(" [ UCAK FOTOSU: {} ] ", e.icao.to_uppercase())
+        }
+    } else {
+        format!(" [ UCAK FOTOSU: {} ] ", icao.to_uppercase())
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(TELETEXT_CYAN))
+        .title(title)
+        .style(Style::default().bg(BG_PRIMARY));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width < 6 || inner.height < 2 {
+        return;
+    }
+
+    if let Some(entry) = entry_opt {
+        if entry.image_bytes.is_some() {
+            let has_caption = inner.height >= 4;
+            let img_h = if has_caption {
+                inner.height.saturating_sub(1)
+            } else {
+                inner.height
+            };
+            let img_rect = Rect::new(inner.x, inner.y, inner.width, img_h);
+            state.pending_photo_slot = Some((
+                key,
+                (img_rect.x, img_rect.y, img_rect.width, img_rect.height),
+            ));
+
+            if has_caption {
+                let credit = entry
+                    .photographer
+                    .as_deref()
+                    .map(|p| format!("Foto: {} ({})", p, entry.source))
+                    .unwrap_or_else(|| entry.source.clone());
+                let cap_rect = Rect::new(inner.x, inner.y + img_h, inner.width, 1);
+                let cap = Paragraph::new(Span::styled(credit, Style::default().fg(FG_MUTED)));
+                frame.render_widget(cap, cap_rect);
+            }
+            return;
+        }
+
+        let mut msg_lines = vec![Line::from(Span::styled(
+            entry.note.clone(),
+            Style::default().fg(TELETEXT_YELLOW),
+        ))];
+        if let Some(reg) = &entry.registration {
+            msg_lines.push(Line::from(Span::styled(
+                format!("Tescil: {}", reg),
+                Style::default().fg(TELETEXT_CYAN),
+            )));
+        }
+        if let Some(typ) = &entry.aircraft_type {
+            msg_lines.push(Line::from(Span::styled(
+                format!("Tip   : {}", typ),
+                Style::default().fg(FG_PRIMARY),
+            )));
+        }
+        frame.render_widget(Paragraph::new(msg_lines).wrap(Wrap { trim: true }), inner);
+        return;
+    }
+
+    let status_text = match &state.aircraft_media_status {
+        AircraftMediaStatus::Loading { icao: l } if l.eq_ignore_ascii_case(&key) => {
+            "Internetten ucak fotografi araniyor..."
+        }
+        AircraftMediaStatus::NotFound {
+            icao: n, reason, ..
+        } if n.eq_ignore_ascii_case(&key) => reason.as_str(),
+        _ => "Fotograf hazirlaniyor...",
+    };
+
+    let info = Paragraph::new(Span::styled(status_text, Style::default().fg(FG_MUTED)))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(info, inner);
+}
 
 pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppState) {
     if area.width < 18 || area.height < 8 {
@@ -31,23 +132,7 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
     let st_lat = state.station_lat;
     let st_lon = state.station_lon;
 
-    let inspected_track = state
-        .selected_target_id
-        .as_ref()
-        .and_then(|id| {
-            state
-                .air_targets
-                .iter()
-                .find(|t| &t.id == id)
-                .or_else(|| state.sea_targets.iter().find(|t| &t.id == id))
-                .or_else(|| state.targets.iter().find(|t| &t.id == id))
-        })
-        .cloned()
-        .or_else(|| match state.selected_domain {
-            20 => state.aircraft_at_sorted(state.selected_row).cloned(),
-            21 => state.vessel_at_sorted(state.selected_row).cloned(),
-            _ => state.aircraft_at_sorted(0).cloned(),
-        });
+    let inspected_track = state.inspected_target();
 
     if state.selected_domain == 30 {
         let mut eams: Vec<_> = state.eam_messages.iter().collect();
@@ -266,16 +351,61 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
         }
     }
 
-    let detail_p = Paragraph::new(lines)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(BORDER_ACTIVE))
-                .title(" [TEKNIK DENETCI & TELEMETRI (I)] ")
-                .style(Style::default().bg(BG_PANEL).fg(FG_PRIMARY)),
-        );
-    frame.render_widget(detail_p, chunks[0]);
+    let show_air_photo = !state.is_dialog_open
+        && !matches!(state.selected_domain, 3 | 30 | 50)
+        && inspected_track
+            .as_ref()
+            .is_some_and(|t| t.domain == Domain::Air);
+
+    if show_air_photo {
+        if let Some(t) = &inspected_track {
+            let key = t.id.to_lowercase();
+            if let Some(entry) = state.aircraft_photo_cache.get(&key) {
+                if let Some(reg) = &entry.registration {
+                    lines.push(Line::from(vec![
+                        Span::styled("Tescil      : ", Style::default().fg(FG_SECONDARY)),
+                        Span::styled(reg.clone(), Style::default().fg(TELETEXT_CYAN)),
+                    ]));
+                }
+            }
+        }
+    }
+
+    let detail_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER_ACTIVE))
+        .title(" [TEKNIK DENETCI (I) | O: Tam Dosya] ")
+        .style(Style::default().bg(BG_PANEL).fg(FG_PRIMARY));
+    let detail_inner = detail_block.inner(chunks[0]);
+    frame.render_widget(detail_block, chunks[0]);
+
+    let air_icao_opt = if show_air_photo {
+        inspected_track.as_ref().map(|t| t.id.clone())
+    } else {
+        None
+    };
+
+    if let Some(air_icao) = air_icao_opt {
+        if detail_inner.width >= 44 && detail_inner.height >= 8 {
+            let split = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(54), Constraint::Percentage(46)])
+                .split(detail_inner);
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), split[0]);
+            render_aircraft_photo_box(frame, split[1], state, &air_icao);
+        } else if detail_inner.height >= 17 && detail_inner.width >= 20 {
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(9), Constraint::Length(9)])
+                .split(detail_inner);
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), split[0]);
+            render_aircraft_photo_box(frame, split[1], state, &air_icao);
+        } else {
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), detail_inner);
+        }
+    } else {
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), detail_inner);
+    }
 
     // 2. Hızlı Operasyonel Aksiyon Butonları (Tıklanabilir)
     let actions = [

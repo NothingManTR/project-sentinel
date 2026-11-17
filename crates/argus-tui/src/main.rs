@@ -1,5 +1,6 @@
 mod app;
 mod audio;
+mod photo_ui;
 mod ui;
 mod views;
 mod web_map;
@@ -59,11 +60,17 @@ async fn main() -> anyhow::Result<()> {
     enable_raw_mode()?;
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide)?;
+    let picker = if std::env::var_os("TMUX").is_some() {
+        ratatui_image::picker::Picker::from_fontsize((8, 16))
+    } else {
+        ratatui_image::picker::Picker::from_query_stdio()
+            .unwrap_or_else(|_| ratatui_image::picker::Picker::from_fontsize((8, 16)))
+    };
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     // 6. Ana TUI Uygulamasını Çalıştır
-    let mut app = App::new(state, audio);
+    let mut app = App::new(state, audio, picker);
     let app_res = app.run(&mut terminal).await;
 
     // 7. Terminali Güvenle Geri Yükle

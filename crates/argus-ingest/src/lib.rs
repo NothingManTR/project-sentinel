@@ -1,4 +1,5 @@
 pub mod acled;
+pub mod aircraft_photo;
 pub mod aisstream;
 pub mod celestrak;
 pub mod cisa_kev;

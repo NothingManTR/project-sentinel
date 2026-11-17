@@ -1,3 +1,4 @@
+use crate::photo_ui::PhotoRenderCtx;
 use crate::views::{
     air_tracks::render_air_tracks_view, calculator::render_calculator_view,
     cyberint::render_cyberint_view, dashboard::render_dashboard_view,
@@ -19,9 +20,10 @@ use ratatui::{
     Frame,
 };
 
-pub fn render_main_ui(frame: &mut Frame, state: &mut AppState) {
+pub fn render_main_ui(frame: &mut Frame, state: &mut AppState, photo_ctx: &mut PhotoRenderCtx) {
     let screen = frame.area();
     state.hit_tester.clear();
+    state.pending_photo_slot = None;
 
     let bg = Block::default().style(Style::default().bg(BG_PRIMARY));
     frame.render_widget(bg, screen);
@@ -70,6 +72,8 @@ pub fn render_main_ui(frame: &mut Frame, state: &mut AppState) {
     if state.is_dialog_open {
         render_dialog(frame, screen, state);
     }
+
+    photo_ctx.render_active_slot(frame, state);
 }
 
 fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
