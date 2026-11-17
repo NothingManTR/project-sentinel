@@ -16,8 +16,21 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
     }
 
     let has_photo = state.dialog_aircraft_icao.is_some();
-    let max_w = if has_photo { 114 } else { 86 };
-    let max_h = if has_photo { 30 } else { 26 };
+    let is_long_report = state.dialog_content.len() > 14;
+    let max_w = if has_photo {
+        114
+    } else if is_long_report {
+        108
+    } else {
+        86
+    };
+    let max_h = if has_photo {
+        30
+    } else if is_long_report {
+        34
+    } else {
+        26
+    };
     let dialog_w = max_w.min(screen_area.width.saturating_sub(4));
     let dialog_h = max_h.min(screen_area.height.saturating_sub(4));
     let dialog_x = (screen_area.width.saturating_sub(dialog_w)) / 2;

@@ -1,84 +1,245 @@
 use argus_core::geo::haversine_km;
 use argus_core::state::AppState;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.8-flash";
 const FALLBACK_GEMINI_MODELS: &[&str] = &[
     "gemini-3.8-flash",
-    "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
+    "gemini-3.6-flash",
     "gemini-flash-lite-latest",
 ];
 
-/// Canlı telemetri durumundan Gemini için yoğunlaştırılmış taktik istihbarat bağlamı hazırlar
+/// Canlı telemetri durumundan tüm istihbarat disiplinlerini kapsayan kapsamlı taktik SITREP bağlamı hazırlar
 pub fn build_tactical_prompt(state: &AppState) -> String {
     let st_lat = state.station_lat;
     let st_lon = state.station_lon;
-    let mil_air = state.air_targets.iter().filter(|t| t.is_military).count();
-    let mil_sea = state.sea_targets.iter().filter(|t| t.is_military).count();
+    let now_utc = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
 
+    // 1. OSINT DEFCON
     let defcon_line = if let Some(d) = &state.defcon_status {
         let cmds: Vec<String> = d
             .commands
             .iter()
-            .take(5)
             .map(|(c, l)| format!("{}:D{}", c, l))
             .collect();
         format!(
-            "OSINT DEFCON {} ({}) | Komutlar: {}",
+            "OSINT DEFCON {} (Kaynak: {}, Guncelleme: {}) | Komutanliklar: {}",
             d.overall_level,
             d.source,
-            cmds.join(", ")
+            d.updated_at.format("%H:%M UTC"),
+            if cmds.is_empty() {
+                "-".to_string()
+            } else {
+                cmds.join(", ")
+            }
         )
     } else {
         "OSINT DEFCON verisi henuz alinmadi".to_string()
     };
 
-    let wx_line = if let Some(wx) = &state.station_weather {
-        format!(
-            "Istasyon Havasi ({}): {:.1}C, Ruzgar {:.0}kt @ {:.0}deg, Bulut %{} - {}",
-            wx.name, wx.temp_c, wx.wind_kts, wx.wind_deg, wx.clouds_pct, wx.condition
-        )
+    // 2. Seçili / Takip Edilen Hedef + A-2 Rota Bilgisi
+    let selected_line = if let Some(sel_id) = &state.selected_target_id {
+        if let Some(t) = state
+            .air_targets
+            .iter()
+            .chain(state.sea_targets.iter())
+            .find(|x| &x.id == sel_id)
+        {
+            let d = haversine_km(st_lat, st_lon, t.geo.lat, t.geo.lon);
+            let cs_key = t.callsign.trim().to_uppercase();
+            let sched_txt = state
+                .flight_schedule_cache
+                .get(&cs_key)
+                .map(|s| {
+                    format!(
+                        " | Rota: {}->{} ({})",
+                        s.origin_code.as_deref().unwrap_or("?"),
+                        s.dest_code.as_deref().unwrap_or("?"),
+                        s.status.as_deref().unwrap_or("-")
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                "{} [{}] ({}, {}) | {:.4},{:.4} ({:.0}km) | Irtifa:{:.0}m Hiz:{:.0}kt Rota:{:.0}deg Squawk:{}{}",
+                t.callsign,
+                t.id,
+                t.airframe_or_vessel_class.as_deref().unwrap_or(t.domain.as_str()),
+                t.operator_branch
+                    .as_deref()
+                    .or(t.operator_country.as_deref())
+                    .unwrap_or("-"),
+                t.geo.lat,
+                t.geo.lon,
+                d,
+                t.geo.alt_m.unwrap_or(0.0),
+                t.speed_kts.unwrap_or(0.0),
+                t.heading_deg.unwrap_or(0.0),
+                t.squawk.as_deref().unwrap_or("-"),
+                sched_txt
+            )
+        } else {
+            format!("Secili ID: {}", sel_id)
+        }
     } else {
-        "Istasyon meteoroloji verisi yok".to_string()
+        "Yok".to_string()
     };
 
-    // En yakın veya anomalili askeri uçuşlar
-    let mut mil_list: Vec<(f64, String)> = state
-        .air_targets
-        .iter()
-        .filter(|t| t.is_military || state.track_anomalies.contains_key(&t.id))
-        .map(|t| {
-            let d = haversine_km(st_lat, st_lon, t.geo.lat, t.geo.lon);
-            let anom = state
-                .track_anomalies
-                .get(&t.id)
-                .map(|a| format!(" [{}]", a))
-                .unwrap_or_default();
-            (
-                d,
-                format!(
-                    "{} ({} / {}) {:.0}km {}{}",
-                    t.callsign,
-                    t.airframe_or_vessel_class.as_deref().unwrap_or("Mil"),
-                    t.operator_branch.as_deref().unwrap_or("-"),
-                    d,
-                    t.origin.as_deref().unwrap_or("KURESEL"),
-                    anom
-                ),
+    // 3. Otomatik Alarmlar & İzleme Listesi
+    let watchlist_vec: Vec<String> = state.watchlist.iter().take(15).cloned().collect();
+    let alert_vec: Vec<_> = state.alerts.iter().collect();
+    let alerts_txt: Vec<String> = alert_vec
+        .into_iter()
+        .rev()
+        .take(12)
+        .map(|a| {
+            format!(
+                "[{}|{}|{}] {}",
+                a.timestamp.format("%H:%M"),
+                a.severity.as_str(),
+                a.domain,
+                a.message
             )
         })
         .collect();
-    mil_list.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let top_mil: Vec<String> = mil_list.into_iter().take(10).map(|(_, s)| s).collect();
 
+    // 4. AIRINT (AOR dağılımı, Acil Squawk 7500/7600/7700, Öncelikli 25 Askeri/Anomalili Uçuş)
+    let mil_air = state.air_targets.iter().filter(|t| t.is_military).count();
+    let mut aor_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut emerg_flights = Vec::new();
+    let mut air_prioritized: Vec<(u8, f64, String)> = Vec::new();
+    for t in state.air_targets.iter() {
+        let aor = t.origin.as_deref().unwrap_or("KURESEL");
+        *aor_counts.entry(aor).or_insert(0) += 1;
+        let sq = t.squawk.as_deref().unwrap_or("");
+        let is_emerg = matches!(sq, "7500" | "7600" | "7700");
+        let anom = state.track_anomalies.get(&t.id);
+        let d = haversine_km(st_lat, st_lon, t.geo.lat, t.geo.lon);
+        let cs_key = t.callsign.trim().to_uppercase();
+        let sched = state
+            .flight_schedule_cache
+            .get(&cs_key)
+            .map(|s| {
+                format!(
+                    " [{}>{}]",
+                    s.origin_code.as_deref().unwrap_or("?"),
+                    s.dest_code.as_deref().unwrap_or("?")
+                )
+            })
+            .unwrap_or_default();
+        if is_emerg {
+            emerg_flights.push(format!(
+                "{} SQ:{} ({:.2},{:.2} {:.0}km){}",
+                t.callsign, sq, t.geo.lat, t.geo.lon, d, sched
+            ));
+        }
+        if is_emerg || anom.is_some() || t.is_military {
+            let prio = if is_emerg {
+                0
+            } else if anom.is_some() {
+                1
+            } else {
+                2
+            };
+            let fl = (t.geo.alt_m.unwrap_or(0.0) * 3.28084 / 100.0).round() as i64;
+            air_prioritized.push((
+                prio,
+                d,
+                format!(
+                    "{} ({}/{}) {:.2},{:.2} {:.0}km FL{} {:.0}kt {} [{}{}{}]",
+                    t.callsign,
+                    t.airframe_or_vessel_class.as_deref().unwrap_or("Mil"),
+                    t.operator_branch
+                        .as_deref()
+                        .or(t.operator_country.as_deref())
+                        .unwrap_or("-"),
+                    t.geo.lat,
+                    t.geo.lon,
+                    d,
+                    fl.max(0),
+                    t.speed_kts.unwrap_or(0.0),
+                    aor,
+                    anom.map(|a| format!("ANOM:{}", a)).unwrap_or_else(|| "MIL".to_string()),
+                    if sq.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" SQ:{}", sq)
+                    },
+                    sched
+                ),
+            ));
+        }
+    }
+    air_prioritized.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    let aor_summary: Vec<String> = aor_counts
+        .into_iter()
+        .map(|(k, v)| format!("{}:{}", k, v))
+        .collect();
+    let top_air: Vec<String> = air_prioritized.into_iter().take(25).map(|x| x.2).collect();
+
+    // 5. SEAINT (Harp/Sahil Güvenlik/Anomali + En Yakın 15 Gemi)
+    let mil_sea = state.sea_targets.iter().filter(|t| t.is_military).count();
+    let mut sea_prioritized: Vec<(u8, f64, String)> = Vec::new();
+    for t in state.sea_targets.iter() {
+        let d = haversine_km(st_lat, st_lon, t.geo.lat, t.geo.lon);
+        let anom = state.track_anomalies.get(&t.id);
+        let prio = if anom.is_some() {
+            0
+        } else if t.is_military {
+            1
+        } else {
+            2
+        };
+        sea_prioritized.push((
+            prio,
+            d,
+            format!(
+                "{} ({}/{}) {:.2},{:.2} {:.0}km {:.1}kt Hdg:{:.0}{}",
+                t.callsign,
+                t.vessel_type
+                    .as_deref()
+                    .or(t.airframe_or_vessel_class.as_deref())
+                    .unwrap_or("Gemi"),
+                t.operator_country.as_deref().unwrap_or("-"),
+                t.geo.lat,
+                t.geo.lon,
+                d,
+                t.speed_kts.unwrap_or(0.0),
+                t.heading_deg.unwrap_or(0.0),
+                anom.map(|a| format!(" [{}]", a)).unwrap_or_default()
+            ),
+        ));
+    }
+    sea_prioritized.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    let top_sea: Vec<String> = sea_prioritized.into_iter().take(15).map(|x| x.2).collect();
+
+    // 6. GEOINT (GPS-JAM, Anomali, K-4 Füzyon)
+    let jam_zones: Vec<String> = state
+        .gps_jamming_zones
+        .iter()
+        .take(15)
+        .map(|(lat, lon, r, lbl)| format!("{} ({:.2},{:.2} r={:.0}km)", lbl, lat, lon, r))
+        .collect();
+    let anom_list: Vec<String> = state
+        .track_anomalies
+        .iter()
+        .take(15)
+        .map(|(id, desc)| format!("{}: {}", id, desc))
+        .collect();
     let fusions: Vec<String> = state
         .fusion_clusters
         .iter()
-        .take(5)
+        .take(10)
         .map(|f| {
             format!(
-                "({:.2}N,{:.2}E) Skor:{} [{}]: {}",
+                "({:.2},{:.2}) Skor:{} [{}]: {}",
                 f.lat,
                 f.lon,
                 f.score,
@@ -88,69 +249,349 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         })
         .collect();
 
+    // 7. SATINT (SGP4 Uydular)
+    let above_horizon = state.satellites.iter().filter(|s| s.el_deg > 0.0).count();
+    let mut sats_sorted: Vec<_> = state.satellites.iter().collect();
+    sats_sorted.sort_by(|a, b| {
+        let a_up = if a.el_deg > 0.0 { 0 } else { 1 };
+        let b_up = if b.el_deg > 0.0 { 0 } else { 1 };
+        a_up.cmp(&b_up).then_with(|| a.next_pass_secs.cmp(&b.next_pass_secs))
+    });
+    let top_sats: Vec<String> = sats_sorted
+        .into_iter()
+        .take(15)
+        .map(|s| {
+            format!(
+                "{} (#{}) {:.2},{:.2} Alt:{:.0}km El:{:.1}deg AOS:{}dk",
+                s.name,
+                s.norad_id,
+                s.lat,
+                s.lon,
+                s.alt_km,
+                s.el_deg,
+                s.next_pass_secs / 60
+            )
+        })
+        .collect();
+
+    // 8. SIGINT (KiwiSDR + DSP Tarama/CW + EAM)
+    let sdr_line = format!(
+        "Aktif:{}, {}kHz {}, RSSI:{:.1}dBm, SNR:{:+.1}dB, Dinleme:{}, Tarama:{}, VOX:{}, CW:{}{}, KayitliNode:{}",
+        if state.sdr_connected_host.is_empty() {
+            "Bagli Degil"
+        } else {
+            &state.sdr_connected_host
+        },
+        state.current_frequency_khz,
+        state.sdr_mode,
+        state.sdr_rssi_dbm,
+        state.sdr_snr_db,
+        if state.is_radio_playing { "ACIK" } else { "KAPALI" },
+        if state.sdr_scanner_enabled { "ACIK" } else { "KAPALI" },
+        if state.sdr_vox_enabled { "ACIK" } else { "KAPALI" },
+        if state.sdr_cw_enabled { "ACIK" } else { "KAPALI" },
+        if state.sdr_cw_text.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" [{}WPM:'{}']", state.sdr_cw_wpm, state.sdr_cw_text.trim())
+        },
+        state.sdr_nodes.len()
+    );
+    let scan_hits: Vec<String> = state
+        .sdr_scan_hits
+        .iter()
+        .rev()
+        .take(8)
+        .map(|h| {
+            format!(
+                "{} {:.1}kHz {} (+{:.1}dB @ {})",
+                h.timestamp.format("%H:%M"),
+                h.frequency_khz,
+                h.mode,
+                h.snr_db,
+                h.host_port
+            )
+        })
+        .collect();
     let eam_vec: Vec<_> = state.eam_messages.iter().collect();
     let eams: Vec<String> = eam_vec
         .into_iter()
         .rev()
-        .take(4)
-        .map(|e| format!("{} {:.1}kHz {} ({})", e.timestamp.format("%H:%M"), e.frequency_khz, e.preamble, e.auth_station))
+        .take(10)
+        .map(|e| {
+            let preview: String = e.content.chars().take(42).collect();
+            format!(
+                "{} {:.1}kHz [{}] {} ({}{}) \"{}\"",
+                e.timestamp.format("%H:%M"),
+                e.frequency_khz,
+                e.mode,
+                e.preamble,
+                e.auth_station,
+                if e.is_flash_override { "|FLASH" } else { "" },
+                preview
+            )
+        })
         .collect();
 
-    let quakes: Vec<String> = state
-        .earthquakes
-        .iter()
-        .take(4)
-        .map(|q| format!("M{:.1} {}", q.mag, q.place))
+    // 9. MASINT (Deprem + NASA FIRMS VIIRS + Safecast CBRN + NOAA Uzay Havası + OpenWeatherMap)
+    let mut quakes_sorted: Vec<_> = state.earthquakes.iter().collect();
+    quakes_sorted.sort_by(|a, b| b.mag.partial_cmp(&a.mag).unwrap_or(std::cmp::Ordering::Equal));
+    let top_quakes: Vec<String> = quakes_sorted
+        .into_iter()
+        .take(12)
+        .map(|q| {
+            format!(
+                "M{:.1} {} ({:.2},{:.2} d={:.0}km @ {})",
+                q.mag,
+                q.place,
+                q.lat,
+                q.lon,
+                q.depth_km,
+                q.time.format("%H:%M")
+            )
+        })
         .collect();
 
-    let news: Vec<String> = state
-        .news
+    let firms_total = state.firms_fires.len();
+    let firms_max_k = state
+        .firms_fires
         .iter()
+        .map(|f| f.brightness)
+        .fold(0.0_f64, f64::max);
+    let firms_hot_350 = state.firms_fires.iter().filter(|f| f.brightness >= 350.0).count();
+    let mut firms_sorted: Vec<_> = state.firms_fires.iter().collect();
+    firms_sorted.sort_by(|a, b| {
+        b.brightness
+            .partial_cmp(&a.brightness)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let top_firms: Vec<String> = firms_sorted
+        .into_iter()
+        .take(15)
+        .map(|f| {
+            format!(
+                "({:.2},{:.2}) {:.1}K [conf:{}] {} {} {}",
+                f.lat, f.lon, f.brightness, f.confidence, f.satellite, f.acq_date, f.acq_time
+            )
+        })
+        .collect();
+
+    let rad_total = state.radiation_measurements.len();
+    let mut rad_sorted: Vec<_> = state.radiation_measurements.iter().collect();
+    rad_sorted.sort_by(|a, b| {
+        b.value
+            .partial_cmp(&a.value)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let top_rad: Vec<String> = rad_sorted
+        .into_iter()
+        .take(10)
+        .map(|r| {
+            format!(
+                "{:.3} {} @ {} ({:.2},{:.2})",
+                r.value,
+                r.unit,
+                r.location_name.as_deref().unwrap_or("Istasyon"),
+                r.lat,
+                r.lon
+            )
+        })
+        .collect();
+
+    let solar_line = if let Some(sw) = &state.solar_weather {
+        format!(
+            "Kp:{:.1} | Firtina:{} | X-Ray:{} ({})",
+            sw.kp_index,
+            sw.storm_level,
+            sw.flare_class,
+            sw.updated.format("%H:%M UTC")
+        )
+    } else {
+        "Veri yok".to_string()
+    };
+
+    let mut wx_all: Vec<String> = Vec::new();
+    if let Some(wx) = &state.station_weather {
+        wx_all.push(format!(
+            "[ISTASYON {}]: {:.1}C Ruzgar:{:.0}kt/{:.0}deg Bulut:%{} ({})",
+            wx.name, wx.temp_c, wx.wind_kts, wx.wind_deg, wx.clouds_pct, wx.condition
+        ));
+    }
+    for wp in state.weather_points.iter().take(10) {
+        wx_all.push(format!(
+            "{} ({:.2},{:.2}): {:.1}C Ruzgar:{:.0}kt Bulut:%{} ({})",
+            wp.name, wp.lat, wp.lon, wp.temp_c, wp.wind_kts, wp.clouds_pct, wp.condition
+        ));
+    }
+
+    // 10. CYBERINT (CISA KEV, IODA, Shodan)
+    let cyber_vec: Vec<_> = state.cyber_incidents.iter().collect();
+    let top_cyber: Vec<String> = cyber_vec
+        .iter()
+        .rev()
+        .take(12)
+        .map(|c| {
+            format!(
+                "[{}|{}] {} -> {}",
+                c.event_type,
+                c.severity.as_str(),
+                c.title,
+                c.target
+            )
+        })
+        .collect();
+    let shodan_list: Vec<String> = state
+        .shodan_recon_cache
+        .values()
         .take(6)
-        .map(|n| format!("[{}] {}", n.source, n.title))
+        .map(|h| {
+            format!(
+                "{} ({}/{}) Port:{:?} Vuln:{}",
+                h.ip,
+                h.country.as_deref().unwrap_or("-"),
+                h.isp.as_deref().unwrap_or("-"),
+                &h.ports[..h.ports.len().min(6)],
+                h.vulns.len()
+            )
+        })
         .collect();
 
-    let cybers: Vec<String> = state
-        .cyber_incidents
+    // 11. ACLED Çatışma & OSINT Haberler
+    let acled_top: Vec<String> = state
+        .acled_events
         .iter()
-        .take(4)
-        .map(|c| c.title.clone())
+        .take(8)
+        .map(|e| {
+            format!(
+                "{} [{}/{}] {} ({} vs {}) Kayip:{}",
+                e.event_date,
+                e.country,
+                e.location,
+                e.sub_event_type,
+                e.actor1,
+                e.actor2.as_deref().unwrap_or("-"),
+                e.fatalities
+            )
+        })
+        .collect();
+    let news_vec: Vec<_> = state.news.iter().collect();
+    let top_news: Vec<String> = news_vec
+        .iter()
+        .rev()
+        .take(15)
+        .map(|n| {
+            format!(
+                "{} [{}|{}] {}",
+                n.published.format("%H:%M"),
+                n.source,
+                n.category,
+                n.title
+            )
+        })
         .collect();
 
     format!(
-        "Sen Project Sentinel C4ISR istihbarat subayisin. Asagidaki CANLI gercek zamanli sensor verilerini analiz et ve Turkce olarak kisa, madde madde net bir TAKTIK DURUM RAPORU (SITREP) hazirla. Veri uydurma; sadece verilen telemetriyi yorumla.\n\n\
-        BOLUMLER:\n\
-        1. GENEL TEHDIT & DEFCON OZETI (2 cumle)\n\
-        2. HAVA / DENIZ / ANOMALI DEGERLENDIRMESI\n\
-        3. COKLU-SENSOR FUZYON & JEOSISMIK / SIBER BULGULAR\n\
-        4. ONCELIKLI TAKIP ONERILERI (3 madde)\n\n\
-        --- CANLI TELEMETRI ---\n\
-        Istasyon: {:.4}N, {:.4}E\n\
-        {}\n\
-        {}\n\
-        Toplam Hedef: ADS-B {} (Askeri: {}) | AIS {} (Harp: {}) | Uydu: {} | GPS-JAM Bolgesi: {}\n\
-        Yakin/Anomalili Askeri Ucuslar: {}\n\
-        Fuzyon Kriz Kumeleri: {}\n\
-        Son HFGCS EAM: {}\n\
-        Sismik: {}\n\
-        Siber/IODA: {}\n\
-        OSINT Haberler: {}",
+        "Sen Project Sentinel (ARGUS C4ISR) kidemli istihbarat subayisin. Asagida sistemdeki TUM aktif sensor ve istihbarat disiplinlerinden toplanan CANLI telemetri yer almaktadir.\n\
+        Sadece asagidaki gercek verileri analiz et (hicbir hedef/olay uydurma; verisi 'Yok' veya 0 olan alanlari kisaca bos/temiz olarak belirt) ve Turkce, karar alici komuta duzeyinde kapsamli ama net bir TAKTIK DURUM RAPORU (SITREP) uret.\n\n\
+        ISTENEN RAPOR BASLIKLARI:\n\
+        1. GENEL TEHDIT & DEFCON DEGERLENDIRMESI\n\
+        2. ALARMLAR, ANOMALILER & ONCELIKLI HEDEFLER\n\
+        3. HAVA (AIRINT) / DENIZ (SEAINT) / UZAY (SATINT) HAREKETLERI\n\
+        4. SIGINT (KIWISDR & HFGCS EAM) / SIBER (CYBERINT) / CATISMA & OSINT\n\
+        5. MASINT (SISMIK, NASA FIRMS TERMAL, SAFECAST CBRN, UZAY & HAVA DURUMU)\n\
+        6. COKLU-SENSOR FUZYON & KOMUTA TAVSIYELERI (3-5 madde)\n\n\
+        === 1. KOMUTA & KONUM ===\n\
+        Zaman: {} | Istasyon: {} ({}) @ {:.4}N, {:.4}E | Harita Odak: {:.2}N, {:.2}E (Zoom:{:.1}x) | KatmanMask: {:#06x}\n\
+        Secili Hedef: {}\n\
+        {}\n\n\
+        === 2. ALARMLAR & WATCHLIST ===\n\
+        Watchlist ({}): {}\n\
+        Son Alarmlar ({}): {}\n\n\
+        === 3. AIRINT (ADS-B) ===\n\
+        Toplam Ucak: {} | Askeri/ISR: {} | AOR Dagilimi: {}\n\
+        Acil Squawk (7500/7600/7700): {}\n\
+        Oncelikli Askeri/Anomalili Ucuslar: {}\n\n\
+        === 4. SEAINT (AIS) ===\n\
+        Toplam Gemi: {} | Harp/Sahil Guv: {}\n\
+        Oncelikli/Yakin Gemiler: {}\n\n\
+        === 5. GEOINT / KABLO / GPS-JAM / ANOMALI / FUZYON ===\n\
+        K-1 Denizalti Kablo Sayisi: {}\n\
+        GPS Jamming Bolgeleri ({}): {}\n\
+        Parkur Anomalileri ({}): {}\n\
+        K-4 Coklu-Sensor Fuzyon Kumeleri ({}): {}\n\n\
+        === 6. SATINT (CelesTrak SGP4) ===\n\
+        Toplam Uydu: {} (Ufuk Ustu: {}) | Gorunum/Yakin Gecisler: {}\n\n\
+        === 7. SIGINT (KiwiSDR + HFGCS EAM) ===\n\
+        Tuner/DSP: {}\n\
+        Bant Tarama Yakalamalari ({}): {}\n\
+        HFGCS EAM/SKYKING ({}): {}\n\n\
+        === 8. MASINT (JEOSISMIK / TERMAL / CBRN / UZAY / METEO) ===\n\
+        Depremler ({}): {}\n\
+        NASA FIRMS VIIRS Termal (Toplam:{}, Max:{:.1}K, >=350K:{}): {}\n\
+        Safecast CBRN Radyasyon ({}): {}\n\
+        NOAA Uzay Havasi: {}\n\
+        Meteoroloji (OWM): {}\n\n\
+        === 9. CYBERINT & CATISMA & OSINT ===\n\
+        CISA KEV / IODA Siber ({}): {}\n\
+        Shodan Kesif Onbellegi ({}): {}\n\
+        ACLED Catisma Olaylari ({}): {}\n\
+        OSINT Haber Akisi ({}): {}",
+        now_utc,
+        state.config.station.callsign,
+        state.config.station.name,
         st_lat,
         st_lon,
+        state.map_center_lat,
+        state.map_center_lon,
+        state.map_zoom,
+        state.geoint_layers,
+        selected_line,
         defcon_line,
-        wx_line,
+        state.watchlist.len(),
+        if watchlist_vec.is_empty() { "Yok".to_string() } else { watchlist_vec.join(", ") },
+        state.alerts.len(),
+        if alerts_txt.is_empty() { "Yok".to_string() } else { alerts_txt.join(" | ") },
         state.air_targets.len(),
         mil_air,
+        if aor_summary.is_empty() { "Yok".to_string() } else { aor_summary.join(", ") },
+        if emerg_flights.is_empty() { "Yok".to_string() } else { emerg_flights.join(" | ") },
+        if top_air.is_empty() { "Yok".to_string() } else { top_air.join(" | ") },
         state.sea_targets.len(),
         mil_sea,
-        state.satellites.len(),
+        if top_sea.is_empty() { "Yok".to_string() } else { top_sea.join(" | ") },
+        state.subsea_cables.len(),
         state.gps_jamming_zones.len(),
-        if top_mil.is_empty() { "Yok".to_string() } else { top_mil.join(" | ") },
+        if jam_zones.is_empty() { "Yok".to_string() } else { jam_zones.join(" | ") },
+        state.track_anomalies.len(),
+        if anom_list.is_empty() { "Yok".to_string() } else { anom_list.join(" | ") },
+        state.fusion_clusters.len(),
         if fusions.is_empty() { "Yok".to_string() } else { fusions.join(" | ") },
+        state.satellites.len(),
+        above_horizon,
+        if top_sats.is_empty() { "Yok".to_string() } else { top_sats.join(" | ") },
+        sdr_line,
+        state.sdr_scan_hits.len(),
+        if scan_hits.is_empty() { "Yok".to_string() } else { scan_hits.join(" | ") },
+        state.eam_messages.len(),
         if eams.is_empty() { "Yok".to_string() } else { eams.join(" | ") },
-        if quakes.is_empty() { "Yok".to_string() } else { quakes.join(" | ") },
-        if cybers.is_empty() { "Yok".to_string() } else { cybers.join(" | ") },
-        if news.is_empty() { "Yok".to_string() } else { news.join(" | ") },
+        state.earthquakes.len(),
+        if top_quakes.is_empty() { "Yok".to_string() } else { top_quakes.join(" | ") },
+        firms_total,
+        firms_max_k,
+        firms_hot_350,
+        if top_firms.is_empty() { "Yok".to_string() } else { top_firms.join(" | ") },
+        rad_total,
+        if top_rad.is_empty() { "Yok".to_string() } else { top_rad.join(" | ") },
+        solar_line,
+        if wx_all.is_empty() { "Veri yok".to_string() } else { wx_all.join(" | ") },
+        state.cyber_incidents.len(),
+        if top_cyber.is_empty() { "Yok".to_string() } else { top_cyber.join(" | ") },
+        state.shodan_recon_cache.len(),
+        if shodan_list.is_empty() { "Yok".to_string() } else { shodan_list.join(" | ") },
+        state.acled_events.len(),
+        if acled_top.is_empty() { "Yok".to_string() } else { acled_top.join(" | ") },
+        state.news.len(),
+        if top_news.is_empty() { "Yok".to_string() } else { top_news.join(" | ") },
     )
 }
 
@@ -226,8 +667,8 @@ pub async fn generate_ai_sitrep(
 
     let client = reqwest::Client::builder()
         .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
-        .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(35))
+        .http1_only()
+        .connect_timeout(Duration::from_secs(6))
         .user_agent("Project-Sentinel/0.1")
         .build()?;
 
@@ -237,16 +678,35 @@ pub async fn generate_ai_sitrep(
             "model": model,
             "input": prompt,
         });
+        let req_timeout = if idx == 0 && candidates.len() > 1 {
+            Duration::from_secs(12)
+        } else {
+            Duration::from_secs(35)
+        };
 
-        let resp = client
+        let resp = match client
             .post("https://generativelanguage.googleapis.com/v1beta/interactions")
             .header("x-goog-api-key", key)
+            .timeout(req_timeout)
             .json(&payload)
             .send()
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("{} ag hatasi/zaman asimi: {:#}", model, e);
+                continue;
+            }
+        };
 
         let status = resp.status();
-        let body = resp.text().await?;
+        let body = match resp.text().await {
+            Ok(b) => b,
+            Err(e) => {
+                last_err = format!("{} yanit okuma hatasi: {:#}", model, e);
+                continue;
+            }
+        };
         if status.is_success() {
             let text = parse_gemini_interactions_response(&body)?;
             return if idx > 0 {
@@ -284,5 +744,59 @@ mod tests {
         }"#;
         let out = parse_gemini_interactions_response(sample).unwrap();
         assert!(out.contains("DEFCON 3"));
+    }
+
+    #[test]
+    fn test_build_tactical_prompt_includes_all_domains() {
+        let mut st = AppState::new(Default::default());
+        st.firms_fires.push(argus_core::types::FirmsFire {
+            lat: 36.5,
+            lon: 35.5,
+            brightness: 382.4,
+            confidence: "h".to_string(),
+            acq_date: "2026-11-17".to_string(),
+            acq_time: "1200".to_string(),
+            satellite: "N20".to_string(),
+        });
+        st.radiation_measurements.push(argus_core::types::RadiationMeasurement {
+            id: 1,
+            value: 0.14,
+            unit: "uSv/h".to_string(),
+            lat: 41.0,
+            lon: 29.0,
+            captured_at: None,
+            location_name: Some("Istanbul".to_string()),
+            device_id: None,
+        });
+        st.satellites.push(argus_core::types::SatellitePass {
+            norad_id: 25544,
+            name: "ISS".to_string(),
+            lat: 41.0,
+            lon: 29.0,
+            alt_km: 420.0,
+            velocity_kms: 7.66,
+            az_deg: 180.0,
+            el_deg: 45.0,
+            next_pass_secs: 0,
+            pass_duration_secs: 400,
+            ground_track: vec![],
+        });
+        let prompt = build_tactical_prompt(&st);
+        for required in [
+            "=== 1. KOMUTA & KONUM ===",
+            "=== 2. ALARMLAR & WATCHLIST ===",
+            "=== 3. AIRINT (ADS-B) ===",
+            "=== 4. SEAINT (AIS) ===",
+            "=== 5. GEOINT / KABLO / GPS-JAM",
+            "=== 6. SATINT (CelesTrak SGP4) ===",
+            "=== 7. SIGINT (KiwiSDR + HFGCS EAM) ===",
+            "=== 8. MASINT (JEOSISMIK / TERMAL / CBRN / UZAY / METEO) ===",
+            "=== 9. CYBERINT & CATISMA & OSINT ===",
+            "382.4K",
+            "0.140 uSv/h",
+            "ISS (#25544)",
+        ] {
+            assert!(prompt.contains(required), "missing section: {}", required);
+        }
     }
 }
