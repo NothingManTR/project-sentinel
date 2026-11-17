@@ -18,3 +18,4 @@ sgp4 = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 parking_lot = { workspace = true }
+flate2 = { workspace = true }

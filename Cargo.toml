@@ -30,3 +30,4 @@ futures-util = "0.3"
 toml = "0.8"
 rodio = { version = "0.19", default-features = false, features = ["symphonia-all"] }
 clap = { version = "4.5", features = ["derive"] }
+flate2 = "1.1"

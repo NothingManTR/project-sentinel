@@ -148,9 +148,9 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
         });
     }
 
-    // 4. ACLED Çatışma ve Askeri Olaylar Görevi
-    if let (Some(email), Some(pass)) = (&cfg.acled.email, &cfg.acled.password) {
-        let client = acled::AcledClient::new(Some(email.clone()), Some(pass.clone()));
+    // 4. Çatışma ve Askeri Olaylar Görevi (ACLED birincil + Anahtarsız GDELT v2 15-dk CAMEO yedeği)
+    {
+        let client = acled::AcledClient::new(cfg.acled.email.clone(), cfg.acled.password.clone());
         let st = Arc::clone(&state);
         tokio::spawn(async move {
             loop {
@@ -161,7 +161,7 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                         lock.total_events_received += 1;
                     }
                 }
-                sleep(Duration::from_secs(60)).await;
+                sleep(Duration::from_secs(180)).await;
             }
         });
     }

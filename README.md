@@ -133,7 +133,8 @@ Proje **hiçbir API anahtarı olmadan da** ana istihbarat modüllerinin büyük 
 | :--- | :--- | :--- |
 | **AIRINT** | `opendata.adsb.fi`, `api.adsb.lol`, `OpenSky`, `hexdb.io`, `Planespotters.net` | Küresel ADS-B uçuşlar, AOR sınıflandırması, uçak rotası özeti & fotoğraf |
 | **SIGINT** | `rx.linkfanel.net` (`KiwiSDR` 300 alıcı), `eam.watch` | Canlı 0–30 MHz WebSocket ses/şelale, EAM & SKYKING mesajları |
-| **SATINT** | `CelesTrak` GP TLE | `sgp4` anlık uydu yörüngeleri ve geçiş tahminleri |
+| **SATINT** | `CelesTrak` GP TLE, `live.ariss.org`, `amsat.org` | `sgp4` anlık uydu yörüngeleri ve geçiş tahminleri (`40` uydu) |
+| **ÇATIŞMA** | `GDELT v2` 15-dk CAMEO (`lastupdate.txt`) | Anahtarsız canlı küresel silahlı çatışma/saldırı olayları (ACLED yedeği) |
 | **DEFCON / GEOINT** | `defconlevel.com`, `pizzint.watch`, `submarinecablemap.com` | Canlı OSINT DEFCON seviyesi & K-1 denizaltı fiber kablo haritası |
 | **MASINT** | `USGS`, `Kandilli`, `EMSC`, `Safecast`, `NOAA SWPC` | Canlı deprem ağı, radyasyon sensörleri ve güneş/uzay havası |
 | **CYBER / OSINT** | `CISA KEV`, `IODA`, `Shodan InternetDB`, Kriz RSS Akışları | Bilinen istismarlar, BGP kesintileri, temel IP sorgusu, haber akışı |
@@ -148,7 +149,7 @@ Proje **hiçbir API anahtarı olmadan da** ana istihbarat modüllerinin büyük 
 | **AISStream Deniz (SEAINT)** | `aisstream_key` | `ARGUS_AISSTREAM_KEY` | https://aisstream.io/ (Ücretsiz WebSocket anahtarı) |
 | **Shodan Tam Tarama** | `shodan_key` | `ARGUS_SHODAN_KEY` | https://account.shodan.io/ *(Anahtar yoksa InternetDB çalışır)* |
 | **FlightAware AeroAPI (A-2)** | `flightaware_key` | `ARGUS_FLIGHTAWARE_KEY` | https://www.flightaware.com/aeroapi/portal *(Yoksa `hexdb.io` çalışır)* |
-| **ACLED Çatışma Verisi** | `[acled]` → `email`, `password` | `ARGUS_ACLED_EMAIL`, `ARGUS_ACLED_PASSWORD` | https://developer.acleddata.com/ |
+| **ACLED Çatışma Verisi** | `[acled]` → `email`, `password` | `ARGUS_ACLED_EMAIL`, `ARGUS_ACLED_PASSWORD` | https://developer.acleddata.com/ *(Yoksa/403'te `GDELT v2` çalışır)* |
 
 ---
 
