@@ -359,6 +359,7 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 ("Uydu", 2),
                 ("Termal", 3),
                 ("Deprem", 4),
+                ("SDR", 7),
             ];
             for (lname, lbit) in layers {
                 let on = (state.geoint_layers & (1 << lbit)) != 0;

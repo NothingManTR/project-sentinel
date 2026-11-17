@@ -62,7 +62,7 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
     }
 
-    let active_mode = state.sdr_mode.as_str();
+    let active_mode = state.sdr_mode.clone();
 
     let hdr_prefix = "TUNER: ";
     let freq_str = if state.sdr_freq_input_active {
@@ -84,58 +84,47 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let rec_btn_label = if state.sdr_recording {
         " [V:KAYITTA] "
     } else {
-        " [V:WAV KAYDET] "
+        " [V:WAV] "
+    };
+    let scan_btn_label = if state.sdr_scanner_enabled && state.sdr_scan_locked {
+        " [T:KILITLI] "
+    } else if state.sdr_scanner_enabled {
+        " [T:TARIYOR] "
+    } else {
+        " [T:TARAMA] "
+    };
+    let vox_btn_label = if state.sdr_vox_enabled {
+        " [X:VOX-ACIK] "
+    } else {
+        " [X:VOX] "
+    };
+    let cw_btn_label = if state.sdr_cw_enabled {
+        " [C:CW-ACIK] "
+    } else {
+        " [C:CW] "
     };
 
     let mut cur_x = chunks[0].x + 1 + hdr_prefix.chars().count() as u16;
-    let freq_w = freq_str.chars().count() as u16;
-    if cur_x < chunks[0].x + chunks[0].width {
-        let aw = (chunks[0].x + chunks[0].width - cur_x).min(freq_w);
-        state.hit_tester.register(
-            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
-            HitTarget::ToggleSdrFreqInput,
-        );
-    }
-    cur_x += freq_w + 1;
+    let register_tuner_btn = |state: &mut AppState, x: &mut u16, label: &str, target: HitTarget| {
+        let w = label.chars().count() as u16;
+        if *x < chunks[0].x + chunks[0].width {
+            let aw = (chunks[0].x + chunks[0].width - *x).min(w);
+            state.hit_tester.register(
+                Rect { x: *x, y: chunks[0].y + 1, width: aw, height: 1 },
+                target,
+            );
+        }
+        *x += w + 1;
+    };
 
-    let mode_w = mode_btn_label.chars().count() as u16;
-    if cur_x < chunks[0].x + chunks[0].width {
-        let aw = (chunks[0].x + chunks[0].width - cur_x).min(mode_w);
-        state.hit_tester.register(
-            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
-            HitTarget::CycleSdrMode,
-        );
-    }
-    cur_x += mode_w + 1;
-
-    let audio_btn_w = audio_btn_label.chars().count() as u16;
-    if cur_x < chunks[0].x + chunks[0].width {
-        let aw = (chunks[0].x + chunks[0].width - cur_x).min(audio_btn_w);
-        state.hit_tester.register(
-            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
-            HitTarget::ToggleRadioAudio,
-        );
-    }
-    cur_x += audio_btn_w + 1;
-
-    let failover_btn_w = failover_btn_label.chars().count() as u16;
-    if cur_x < chunks[0].x + chunks[0].width {
-        let aw = (chunks[0].x + chunks[0].width - cur_x).min(failover_btn_w);
-        state.hit_tester.register(
-            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
-            HitTarget::ToggleSdrAutoFailover,
-        );
-    }
-    cur_x += failover_btn_w + 1;
-
-    let rec_w = rec_btn_label.chars().count() as u16;
-    if cur_x < chunks[0].x + chunks[0].width {
-        let aw = (chunks[0].x + chunks[0].width - cur_x).min(rec_w);
-        state.hit_tester.register(
-            Rect { x: cur_x, y: chunks[0].y + 1, width: aw, height: 1 },
-            HitTarget::ToggleSdrRecord,
-        );
-    }
+    register_tuner_btn(state, &mut cur_x, &freq_str, HitTarget::ToggleSdrFreqInput);
+    register_tuner_btn(state, &mut cur_x, &mode_btn_label, HitTarget::CycleSdrMode);
+    register_tuner_btn(state, &mut cur_x, audio_btn_label, HitTarget::ToggleRadioAudio);
+    register_tuner_btn(state, &mut cur_x, failover_btn_label, HitTarget::ToggleSdrAutoFailover);
+    register_tuner_btn(state, &mut cur_x, rec_btn_label, HitTarget::ToggleSdrRecord);
+    register_tuner_btn(state, &mut cur_x, scan_btn_label, HitTarget::ToggleSdrScanner);
+    register_tuner_btn(state, &mut cur_x, vox_btn_label, HitTarget::ToggleSdrVox);
+    register_tuner_btn(state, &mut cur_x, cw_btn_label, HitTarget::ToggleSdrCw);
 
     let audio_status = if state.is_radio_playing {
         Span::styled(
@@ -191,6 +180,34 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
         )
     };
 
+    let toggle_span = |lbl: &'static str, active: bool, active_bg: Color| {
+        if active {
+            Span::styled(
+                lbl,
+                Style::default()
+                    .fg(TELETEXT_BLACK)
+                    .bg(active_bg)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(
+                lbl,
+                Style::default()
+                    .fg(FG_SECONDARY)
+                    .bg(BG_SURFACE)
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
+    };
+
+    let scan_status = toggle_span(
+        scan_btn_label,
+        state.sdr_scanner_enabled,
+        if state.sdr_scan_locked { TELETEXT_RED } else { TELETEXT_GREEN },
+    );
+    let vox_status = toggle_span(vox_btn_label, state.sdr_vox_enabled, TELETEXT_GREEN);
+    let cw_status = toggle_span(cw_btn_label, state.sdr_cw_enabled, TELETEXT_CYAN);
+
     let extra_status = if !state.sdr_rec_path.is_empty() {
         format!(" | {} [{}]", state.sdr_status, state.sdr_rec_path)
     } else {
@@ -221,6 +238,12 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
             failover_status,
             Span::raw(" "),
             rec_status,
+            Span::raw(" "),
+            scan_status,
+            Span::raw(" "),
+            vox_status,
+            Span::raw(" "),
+            cw_status,
             Span::styled(extra_status, Style::default().fg(FG_SECONDARY)),
         ]),
         Line::from(preset_spans),
@@ -267,11 +290,54 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 } else if *val > 40 {
                     (":", TELETEXT_CYAN)
                 } else {
-                    (".", Color::Rgb(22, 36, 56))
+                    (".", FG_MUTED)
                 };
                 row_spans.push(Span::styled(ch, Style::default().fg(col)));
             }
             waterfall_lines.push(Line::from(row_spans));
+        }
+    }
+
+    if state.sdr_cw_enabled {
+        let cw_text = if state.sdr_cw_text.is_empty() {
+            "(600Hz ton bekleniyor...)".to_string()
+        } else {
+            state.sdr_cw_text.clone()
+        };
+        waterfall_lines.push(Line::from(vec![
+            Span::styled(
+                format!(" CW MORZE ({} WPM): ", state.sdr_cw_wpm),
+                Style::default().fg(TELETEXT_BLACK).bg(TELETEXT_CYAN).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(cw_text, Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+
+    if state.sdr_scanner_enabled || !state.sdr_scan_hits.is_empty() {
+        waterfall_lines.push(Line::from(Span::styled(
+            format!(
+                " --- TARAMA YAKALAMALARI ({}) | Esik: >=11.0dB SNR ---",
+                state.sdr_scan_hits.len()
+            ),
+            Style::default().fg(TELETEXT_GREEN).add_modifier(Modifier::BOLD),
+        )));
+        for hit in state.sdr_scan_hits.iter().rev().take(4) {
+            let rec_tag = if hit.recorded_file.is_some() { " [WAV]" } else { "" };
+            waterfall_lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", hit.timestamp.format("%H:%M:%S")),
+                    Style::default().fg(FG_MUTED),
+                ),
+                Span::styled(
+                    format!("{:.1} kHz {} ", hit.frequency_khz, hit.mode),
+                    Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("+{:.1}dB ({:.0}dBm) @ {}{}", hit.snr_db, hit.rssi_dbm, hit.host_port, rec_tag),
+                    Style::default().fg(TELETEXT_CYAN),
+                ),
+            ]));
         }
     }
 
@@ -280,8 +346,8 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_DIM))
             .title(format!(
-                " [CANLI PCM DFT SPEKTRUMU | S-METER: {:.1} dBm | {} Hz] ",
-                state.sdr_rssi_dbm, state.sdr_sample_rate
+                " [CANLI PCM DFT SPEKTRUMU | S-METER: {:.1} dBm (+{:.1}dB SNR) | {} Hz] ",
+                state.sdr_rssi_dbm, state.sdr_snr_db, state.sdr_sample_rate
             ))
             .style(Style::default().bg(BG_PRIMARY).fg(FG_PRIMARY)),
     );

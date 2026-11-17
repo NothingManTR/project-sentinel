@@ -801,11 +801,42 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
     }
 
+    // KiwiSDR HF Radyo Alıcıları (&) [Katman 8 / Bit 7 — Opsiyonel]
+    if state.geoint_layers & 128 != 0 {
+        for (idx, node) in state.sdr_nodes.iter().enumerate() {
+            if let (Some(nlat), Some(nlon)) = (node.lat, node.lon) {
+                if let Some((sx, sy)) = to_screen(nlon, nlat) {
+                    let is_active = state.active_sdr_idx == idx;
+                    let (label, col) = if is_active {
+                        ("[&]", TELETEXT_YELLOW)
+                    } else {
+                        ("&", TELETEXT_GREEN)
+                    };
+                    put_overlay_str(frame.buffer_mut(), area, sx, sy, label, col, None, true);
+                    state.hit_tester.register(
+                        Rect {
+                            x: sx,
+                            y: sy,
+                            width: (label.len() as u16).min(area.x + area.width - sx),
+                            height: 1,
+                        },
+                        HitTarget::MapSdrNode(idx),
+                    );
+                }
+            }
+        }
+    }
+
     // 4. Alt Durum Şeridi
     let fov_km = (2.0 * x_half * 111.0 * cos_lat).max(1.0);
+    let sdr_legend = if state.geoint_layers & 128 != 0 {
+        " [&]SDR"
+    } else {
+        ""
+    };
     let bottom_hud = format!(
-        " FOV:{:.0}km | Z:{:.1}x | {:.2}N,{:.2}E | [+]Hava [^]Deniz [*]Uydu [@]Deprem [#]Termal ",
-        fov_km, zoom, state.map_center_lat, state.map_center_lon
+        " FOV:{:.0}km | Z:{:.1}x | {:.2}N,{:.2}E | [+]Hava [^]Deniz [*]Uydu [@]Deprem [#]Termal{} ",
+        fov_km, zoom, state.map_center_lat, state.map_center_lon, sdr_legend
     );
     put_overlay_str(
         frame.buffer_mut(),

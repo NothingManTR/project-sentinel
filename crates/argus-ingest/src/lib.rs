@@ -12,6 +12,7 @@ pub mod noaa_space;
 pub mod opensky;
 pub mod safecast_radiation;
 pub mod shodan;
+pub mod sigint_dsp;
 pub mod usgs_seismic;
 
 use argus_core::state::AppState;

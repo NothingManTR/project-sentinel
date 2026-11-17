@@ -241,6 +241,24 @@ pub struct SdrNodeInfo {
     pub users: u32,
     pub users_max: u32,
     pub snr: i32,
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lon: Option<f64>,
+    #[serde(default)]
+    pub grid: String,
+}
+
+/// Otonom HF Bant Tarayıcı & VOX Tarafından Yakalanan Yayın Kaydı
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdrScanHit {
+    pub timestamp: DateTime<Utc>,
+    pub frequency_khz: f64,
+    pub mode: String,
+    pub snr_db: f32,
+    pub rssi_dbm: f32,
+    pub host_port: String,
+    pub recorded_file: Option<String>,
 }
 
 /// Otomatik Tehdit ve İzleme Listesi (Watchlist) Alarm Kaydı

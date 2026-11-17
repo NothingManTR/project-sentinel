@@ -1,5 +1,8 @@
+use crate::sigint_dsp::{
+    estimate_spectral_snr_db, parse_kiwi_gps, CwDecoder, SignalActivityDetector,
+};
 use argus_core::state::AppState;
-use argus_core::types::SdrNodeInfo;
+use argus_core::types::{SdrNodeInfo, SdrScanHit};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use std::f32::consts::TAU;
@@ -213,6 +216,17 @@ pub async fn fetch_public_kiwisdr_nodes(client: &reqwest::Client) -> Vec<SdrNode
                                         loc_raw
                                     };
 
+                                    let gps_coords = item["gps"]
+                                        .as_str()
+                                        .and_then(parse_kiwi_gps);
+                                    let grid: String = item["grid"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .chars()
+                                        .filter(|c| c.is_ascii_alphanumeric())
+                                        .take(8)
+                                        .collect();
+
                                     nodes.push(SdrNodeInfo {
                                         name,
                                         url: raw_url.to_string(),
@@ -221,6 +235,9 @@ pub async fn fetch_public_kiwisdr_nodes(client: &reqwest::Client) -> Vec<SdrNode
                                         users,
                                         users_max,
                                         snr,
+                                        lat: gps_coords.map(|c| c.0),
+                                        lon: gps_coords.map(|c| c.1),
+                                        grid,
                                     });
                                 }
                             }
@@ -264,10 +281,10 @@ struct WavRecorder {
 }
 
 impl WavRecorder {
-    fn create(freq_khz: f64, sample_rate: u32) -> std::io::Result<Self> {
+    fn create(prefix: &str, freq_khz: f64, sample_rate: u32) -> std::io::Result<Self> {
         fs::create_dir_all("recordings")?;
         let stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let path = format!("recordings/kiwi_{:.0}kHz_{}.wav", freq_khz, stamp);
+        let path = format!("recordings/{}_{:.0}kHz_{}.wav", prefix, freq_khz, stamp);
         let file = File::create(&path)?;
         let mut writer = BufWriter::new(file);
         // 44-byte RIFF/PCM header placeholder (16-bit mono)
@@ -459,9 +476,28 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
         let mut adpcm = ImaAdpcmDecoder::default();
         let mut read_timed_out_or_errored = false;
         let mut recorder: Option<WavRecorder> = None;
+        let mut scan_detector = SignalActivityDetector::new(11.0, 350.0, 4000.0);
+        let mut vox_detector = SignalActivityDetector::new(11.0, 400.0, 5000.0);
+        let mut cw_decoder = CwDecoder::new(sample_rate);
+        let mut scan_step_started = Instant::now();
+        let mut scan_preset_idx: usize = 0;
+        let mut scan_hit_logged_for_step = false;
+        let mut prev_scan_enabled = false;
+        let mut prev_cw_enabled = false;
+        let mut latest_snr_db: f32 = 0.0;
 
         loop {
-            let (still_playing, req_freq, req_idx, cur_auto_failover, req_mode, want_rec) = {
+            let (
+                still_playing,
+                req_freq,
+                req_idx,
+                cur_auto_failover,
+                req_mode,
+                want_rec,
+                scan_enabled,
+                vox_enabled,
+                cw_enabled,
+            ) = {
                 let st = state.read();
                 (
                     st.is_radio_playing,
@@ -470,16 +506,36 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
                     st.sdr_auto_failover,
                     st.sdr_mode.clone(),
                     st.sdr_recording,
+                    st.sdr_scanner_enabled,
+                    st.sdr_vox_enabled,
+                    st.sdr_cw_enabled,
                 )
             };
 
-            if want_rec && configured && recorder.is_none() {
-                if let Ok(rec) = WavRecorder::create(tuned_freq, sample_rate) {
+            if scan_enabled && !prev_scan_enabled {
+                scan_step_started = Instant::now();
+                scan_hit_logged_for_step = false;
+                scan_detector.reset();
+            } else if !scan_enabled && prev_scan_enabled {
+                scan_detector.reset();
+                state.write().sdr_scan_locked = false;
+            }
+            prev_scan_enabled = scan_enabled;
+
+            if !cw_enabled && prev_cw_enabled {
+                cw_decoder.clear();
+            }
+            prev_cw_enabled = cw_enabled;
+
+            let need_recording = want_rec || (vox_enabled && vox_detector.is_active);
+            if need_recording && configured && recorder.is_none() {
+                let prefix = if !want_rec && vox_enabled { "vox" } else { "kiwi" };
+                if let Ok(rec) = WavRecorder::create(prefix, tuned_freq, sample_rate) {
                     let mut st = state.write();
                     st.sdr_rec_path = rec.path.clone();
                     recorder = Some(rec);
                 }
-            } else if !want_rec {
+            } else if !need_recording {
                 if let Some(rec) = recorder.take() {
                     let finished_path = rec.path.clone();
                     rec.finish();
@@ -663,22 +719,104 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
                 parse_kiwi_snd_frame(&bin_data, &mut adpcm)
             {
                 last_snd_received = Instant::now();
+                let dt_ms = (samples.len() as f32 / sample_rate.max(8000) as f32) * 1000.0;
+
                 if let Some(rec) = recorder.as_mut() {
                     rec.write_samples(&samples);
                 }
+                if cw_enabled {
+                    cw_decoder.set_sample_rate(sample_rate);
+                    cw_decoder.process_samples(&samples);
+                }
                 let wf_row = if seq.is_multiple_of(3) {
-                    Some(compute_dft_waterfall_row(&samples, 60))
+                    let row = compute_dft_waterfall_row(&samples, 60);
+                    latest_snr_db = estimate_spectral_snr_db(&row);
+                    Some(row)
                 } else {
                     None
                 };
 
+                // Kanal değişimi sonrası 500ms AGC oturmasını bekle (parazit kilitlenmelerini önler)
+                let settled = scan_step_started.elapsed() >= Duration::from_millis(500);
+                if settled {
+                    if scan_enabled {
+                        scan_detector.update(latest_snr_db, dt_ms);
+                    }
+                    if vox_enabled {
+                        vox_detector.update(latest_snr_db, dt_ms);
+                    } else if vox_detector.is_active {
+                        vox_detector.reset();
+                    }
+                }
+
                 let mut st = state.write();
                 st.sdr_rssi_dbm = rssi_dbm;
+                st.sdr_snr_db = latest_snr_db;
+
+                if cw_enabled {
+                    st.sdr_cw_text.clone_from(&cw_decoder.text_buffer);
+                    st.sdr_cw_wpm = cw_decoder.estimated_wpm;
+                }
+
+                if scan_enabled {
+                    st.sdr_scan_locked = scan_detector.is_active;
+                    if scan_detector.is_active {
+                        if !scan_hit_logged_for_step {
+                            scan_hit_logged_for_step = true;
+                            if st.sdr_scan_hits.len() >= 24 {
+                                st.sdr_scan_hits.pop_front();
+                            }
+                            st.sdr_scan_hits.push_back(SdrScanHit {
+                                timestamp: chrono::Utc::now(),
+                                frequency_khz: tuned_freq,
+                                mode: tuned_mode.clone(),
+                                snr_db: latest_snr_db,
+                                rssi_dbm,
+                                host_port: target_node.host_port.clone(),
+                                recorded_file: recorder.as_ref().map(|r| r.path.clone()),
+                            });
+                        }
+                    } else if scan_step_started.elapsed() >= Duration::from_millis(2300)
+                        && !st.radio_presets.is_empty()
+                    {
+                        scan_preset_idx = (scan_preset_idx + 1) % st.radio_presets.len();
+                        let (nf, nm) = {
+                            let p = &st.radio_presets[scan_preset_idx];
+                            (p.frequency_khz, p.mode.clone())
+                        };
+                        st.current_frequency_khz = nf;
+                        st.sdr_mode = nm;
+                        scan_step_started = Instant::now();
+                        scan_hit_logged_for_step = false;
+                        scan_detector.reset();
+                        vox_detector.reset();
+                    }
+                } else {
+                    st.sdr_scan_locked = false;
+                }
+
                 if seq.is_multiple_of(15) {
-                    st.sdr_status = format!(
-                        "CANLI SES AKISI: {} ({}) | {:.1} kHz {} | {:.1} dBm",
-                        target_node.host_port, target_node.location, tuned_freq, tuned_mode, rssi_dbm
-                    );
+                    st.sdr_status = if scan_enabled && scan_detector.is_active {
+                        format!(
+                            "TARAMA KILIDI: {:.1} kHz {} (+{:.1}dB SNR | {:.1}dBm)",
+                            tuned_freq, tuned_mode, latest_snr_db, rssi_dbm
+                        )
+                    } else if scan_enabled {
+                        format!(
+                            "TARANIYOR: {:.1} kHz {} (+{:.1}dB SNR | {})",
+                            tuned_freq, tuned_mode, latest_snr_db, target_node.host_port
+                        )
+                    } else {
+                        format!(
+                            "CANLI SES AKISI: {} ({}) | {:.1} kHz {} | {:.1} dBm (+{:.1}dB)",
+                            target_node.host_port,
+                            target_node.location,
+                            tuned_freq,
+                            tuned_mode,
+                            rssi_dbm,
+                            latest_snr_db
+                        )
+                    };
                 }
                 if let Some(row) = wf_row {
                     if st.waterfall_data.len() >= 16 {

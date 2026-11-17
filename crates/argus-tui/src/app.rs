@@ -515,6 +515,21 @@ impl App {
                         self.audio.play(SoundEffect::Click);
                         return;
                     }
+                    KeyCode::Char('t') | KeyCode::Char('T') => {
+                        Self::toggle_sdr_scanner(&mut st);
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Char('x') | KeyCode::Char('X') => {
+                        Self::toggle_sdr_vox(&mut st);
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Char('c') | KeyCode::Char('C') => {
+                        Self::toggle_sdr_cw(&mut st);
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
                     KeyCode::Char(d) if ('1'..='9').contains(&d) => {
                         let idx = (d as usize) - ('1' as usize);
                         if let Some((freq, mode)) = st.radio_presets.get(idx).map(|p| (p.frequency_khz, p.mode.clone())) {
@@ -1065,6 +1080,31 @@ impl App {
                         HitTarget::ToggleSdrRecord => {
                             st.sdr_recording = !st.sdr_recording;
                             self.audio.play(SoundEffect::Blip);
+                        }
+                        HitTarget::ToggleSdrScanner => {
+                            Self::toggle_sdr_scanner(&mut st);
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::ToggleSdrVox => {
+                            Self::toggle_sdr_vox(&mut st);
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::ToggleSdrCw => {
+                            Self::toggle_sdr_cw(&mut st);
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::MapSdrNode(idx) => {
+                            if let Some(node) = st.sdr_nodes.get(idx).cloned() {
+                                st.active_sdr_idx = idx;
+                                st.sdr_scroll = idx;
+                                st.is_radio_playing = true;
+                                Self::sync_radio_state(&self.audio, &st);
+                                st.live_status = format!(
+                                    "HARITA SDR SECILDI: {} ({} | SNR {}dB)",
+                                    node.host_port, node.location, node.snr
+                                );
+                                self.audio.play(SoundEffect::Blip);
+                            }
                         }
                         HitTarget::MasintTab(tid) => {
                             st.masint_tab = tid.min(2);
@@ -1704,6 +1744,40 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    fn toggle_sdr_scanner(st: &mut AppState) {
+        st.sdr_scanner_enabled = !st.sdr_scanner_enabled;
+        if !st.sdr_scanner_enabled {
+            st.sdr_scan_locked = false;
+        }
+        st.live_status = if st.sdr_scanner_enabled {
+            "OTONOM HF BANT TARAYICI ACIK (Esik: >=11dB SNR)".to_string()
+        } else {
+            "OTONOM HF BANT TARAYICI KAPALI".to_string()
+        };
+    }
+
+    fn toggle_sdr_vox(st: &mut AppState) {
+        st.sdr_vox_enabled = !st.sdr_vox_enabled;
+        st.live_status = if st.sdr_vox_enabled {
+            "AKILLI VOX OTO-KAYIT ACIK (recordings/vox_*.wav)".to_string()
+        } else {
+            "AKILLI VOX OTO-KAYIT KAPALI".to_string()
+        };
+    }
+
+    fn toggle_sdr_cw(st: &mut AppState) {
+        st.sdr_cw_enabled = !st.sdr_cw_enabled;
+        if !st.sdr_cw_enabled {
+            st.sdr_cw_text.clear();
+            st.sdr_cw_wpm = 0;
+        }
+        st.live_status = if st.sdr_cw_enabled {
+            "CW MORZE COZUCU ACIK (600Hz Goertzel 5-40 WPM)".to_string()
+        } else {
+            "CW MORZE COZUCU KAPALI".to_string()
+        };
     }
 
     fn sync_radio_state(audio: &AudioManager, st: &AppState) {
