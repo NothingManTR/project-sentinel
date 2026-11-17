@@ -3,6 +3,12 @@ use argus_core::state::AppState;
 use std::time::Duration;
 
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.8-flash";
+const FALLBACK_GEMINI_MODELS: &[&str] = &[
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+];
 
 /// Canlı telemetri durumundan Gemini için yoğunlaştırılmış taktik istihbarat bağlamı hazırlar
 pub fn build_tactical_prompt(state: &AppState) -> String {
@@ -205,34 +211,60 @@ pub async fn generate_ai_sitrep(
     if key.is_empty() {
         anyhow::bail!("config.toml veya ARGUS_GEMINI_KEY icinde gemini_key tanimlanmamis");
     }
-    let model = model_opt
+    let primary = model_opt
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(DEFAULT_GEMINI_MODEL);
 
+    let mut candidates: Vec<&str> = Vec::with_capacity(1 + FALLBACK_GEMINI_MODELS.len());
+    candidates.push(primary);
+    for &fb in FALLBACK_GEMINI_MODELS {
+        if !candidates.contains(&fb) {
+            candidates.push(fb);
+        }
+    }
+
     let client = reqwest::Client::builder()
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(35))
         .user_agent("Project-Sentinel/0.1")
         .build()?;
 
-    let payload = serde_json::json!({
-        "model": model,
-        "input": prompt,
-    });
+    let mut last_err = String::new();
+    for (idx, model) in candidates.iter().enumerate() {
+        let payload = serde_json::json!({
+            "model": model,
+            "input": prompt,
+        });
 
-    let resp = client
-        .post("https://generativelanguage.googleapis.com/v1beta/interactions")
-        .header("x-goog-api-key", key)
-        .json(&payload)
-        .send()
-        .await?;
+        let resp = client
+            .post("https://generativelanguage.googleapis.com/v1beta/interactions")
+            .header("x-goog-api-key", key)
+            .json(&payload)
+            .send()
+            .await?;
 
-    let status = resp.status();
-    let body = resp.text().await?;
-    if !status.is_success() {
-        anyhow::bail!("HTTP {}: {}", status, &body[..body.len().min(280)]);
+        let status = resp.status();
+        let body = resp.text().await?;
+        if status.is_success() {
+            let text = parse_gemini_interactions_response(&body)?;
+            return if idx > 0 {
+                Ok(format!("[Model: {}]\n{}", model, text))
+            } else {
+                Ok(text)
+            };
+        }
+
+        let code = status.as_u16();
+        last_err = format!("HTTP {} ({}): {}", status, model, &body[..body.len().min(220)]);
+        if code == 503 || code == 429 || code == 404 {
+            continue;
+        }
+        anyhow::bail!("{}", last_err);
     }
-    parse_gemini_interactions_response(&body)
+
+    anyhow::bail!("{}", last_err)
 }
 
 #[cfg(test)]

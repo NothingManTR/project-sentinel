@@ -1514,7 +1514,7 @@ impl App {
                         "GEMINI AI ANALIZ HATASI",
                         vec![
                             "=== API ISTEGI BASARISIZ ===".to_string(),
-                            format!("Detay: {}", e),
+                            format!("Detay: {:#}", e),
                         ],
                     );
                 }

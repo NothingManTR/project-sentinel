@@ -218,7 +218,9 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
             frame.render_widget(text_p, text_area);
         }
     } else {
-        let text_p = Paragraph::new(lines).scroll((state.dialog_scroll, 0));
+        let text_p = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((state.dialog_scroll, 0));
         frame.render_widget(text_p, text_area);
     }
 
