@@ -380,6 +380,18 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 );
                 cx += tw + 1;
             }
+            let sh_on = state.map_aircraft_shapes;
+            let sh_tag = if sh_on { "[x:Sekil]" } else { "[ :Sekil]" };
+            let sh_w = sh_tag.chars().count() as u16;
+            r2.push(Span::styled(
+                sh_tag,
+                Style::default().fg(if sh_on { TELETEXT_YELLOW } else { FG_MUTED }),
+            ));
+            r2.push(Span::raw(" "));
+            state.hit_tester.register(
+                Rect { x: cx, y: rows[2].y, width: sh_w, height: 1 },
+                HitTarget::ToggleMapAircraftShapes,
+            );
         }
         ActiveView::AirTracks => {
             let filters = [

@@ -89,7 +89,7 @@ cargo build --release
 - **`G` / `F` / `B`**: Haritada Odakla / Otomatik Takip Kilidi / Izleme Listesi (`Watchlist`)
 - **Hava Radari (`F3`)**: `1` Kuresel Tumu, `2` CENTCOM Tumu, `3` CENTCOM Askeri, `4` Kuresel Askeri, `5` TR/EUCOM, `6` Acil Squawk, `Enter` / `O` (Fotografli Tam Ucak Dosyasi)
 - **SIGINT (`F5`)**: `S` (Canli KiwiSDR Sesini Ac/Kapat), `1`–`9` (HF Frekans Secimi), `F` (Serbest kHz Frekansi Gir), `U` (Mod: `USB`/`LSB`/`AM`/`CW`), `L` (Oto-Alici Degistirmeyi Kilitle/Ac), `V` (`recordings/` Altina `.wav` Kayit Ac/Kapat), `T` (Opsiyonel Otonom Bant Tarayici), `X` (Opsiyonel VOX Oto-WAV Kaydi), `C` (Opsiyonel 600Hz CW Morze Cozucu), `/` (Alici Arama), `Yukari/Asagi/PgUp/PgDn` + `Enter` (300 Alicida Gez & Baglan), `Tab` (Alici/EAM Odagi), `N` (Sonraki Alici)
-- **Harita (`F1`/`F2`)**: `[ :SDR]` katman dugmesi ile 300 KiwiSDR alicisini haritada gorme ve tek tikla baglanma
+- **Harita (`F1`/`F2`)**: `[ :SDR]` katman dugmesi ile 300 KiwiSDR alicisini haritada gorme ve tek tikla baglanma; `P` veya `[ :Sekil]` ile ucaklari yazi yerine platform tipi/modeline gore sekille gosterme (`▲` Jet, `✦` ISR, `◈` Tanker/Kargo, `❖` Heli, `◆` Genis Govde, `▴▸▾◂` Dar Govde, `▫` Hafif)
 - **MASINT (`F9`)**: `1`–`3` veya sekme tiklama (`Sismik`, `CBRN & Termal`, `Uzay Havasi`)
 - **`W`**: Tarayicida canli `http://127.0.0.1:8090` Canvas Leaflet web haritasini ac
 - **`Ctrl+E`**: Anlik istihbarat raporunu Markdown olarak disa aktar

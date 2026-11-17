@@ -129,6 +129,7 @@ pub struct AppState {
     pub map_zoom: f64,                 // 1.0 = Dünya Geneli, >1.0 = Yakınlaşma (Zoom In)
     pub map_high_contrast: bool,
     pub map_style: MapRenderStyle,
+    pub map_aircraft_shapes: bool,
     pub geoint_layers: u8,             // Bitmask: 1=Hava, 2=Deniz, 4=Uydu, 8=Yangın, 16=Deprem, 32=Çatışma, 64=Radyasyon
     pub selected_target_id: Option<String>,
     pub follow_target_id: Option<String>,
@@ -275,6 +276,7 @@ impl AppState {
             map_zoom: 1.0,
             map_high_contrast: true,
             map_style: MapRenderStyle::HalfBlockTerrain,
+            map_aircraft_shapes: false,
             geoint_layers: 0b01111111, // Tüm 7 katman varsayılan açık (Hava, Deniz, Uydu, Yangın, Deprem, Çatışma, Radyasyon)
             selected_target_id: None,
             follow_target_id: None,

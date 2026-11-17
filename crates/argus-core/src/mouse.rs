@@ -26,6 +26,7 @@ pub enum HitTarget {
     SeaFilter(usize),
     OsintCategory(usize),
     MapStyleToggle,
+    ToggleMapAircraftShapes,
     MapTarget(usize, usize),
     SortColumn(usize, usize),
     SearchToggle,

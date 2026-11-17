@@ -783,6 +783,10 @@ impl App {
                 }
                 self.audio.play(SoundEffect::Blip);
             }
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                Self::toggle_map_aircraft_shapes(&mut st);
+                self.audio.play(SoundEffect::Click);
+            }
             KeyCode::Char('h') | KeyCode::Char('H') => {
                 st.set_view(ActiveView::AirTracks);
                 st.sync_air_selection();
@@ -1127,6 +1131,10 @@ impl App {
                         HitTarget::MapStyleToggle => {
                             st.map_style = st.map_style.next();
                             st.live_status = format!("HARITA MODU: {}", st.map_style.label());
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::ToggleMapAircraftShapes => {
+                            Self::toggle_map_aircraft_shapes(&mut st);
                             self.audio.play(SoundEffect::Click);
                         }
                         HitTarget::MapTarget(tile_idx, row_idx) => {
@@ -1744,6 +1752,16 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    fn toggle_map_aircraft_shapes(st: &mut AppState) {
+        st.map_aircraft_shapes = !st.map_aircraft_shapes;
+        st.live_status = if st.map_aircraft_shapes {
+            "HARITA PLATFORM SEKILLERI ACIK ([▲]Jet [✦]ISR [◈]Tanker/Kargo [❖]Heli [◆]Genis [▴]Dar [▫]Hafif)"
+                .to_string()
+        } else {
+            "HARITA PLATFORM SEKILLERI KAPALI (Klasik +CagriAdi modu)".to_string()
+        };
     }
 
     fn toggle_sdr_scanner(st: &mut AppState) {

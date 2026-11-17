@@ -4,7 +4,7 @@ use crate::widgets::world_vectors::{
 use argus_core::mouse::HitTarget;
 use argus_core::state::AppState;
 use argus_core::theme::*;
-use argus_core::types::MapRenderStyle;
+use argus_core::types::{MapRenderStyle, TargetTrack};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -209,6 +209,145 @@ fn put_overlay_str(
             cell.set_char(ch).set_style(s);
         }
     }
+}
+
+fn contains_any(haystack: &str, patterns: &[&str]) -> bool {
+    patterns.iter().any(|p| haystack.contains(p))
+}
+
+/// Kisa kodlarda (orn. C17 vs C172, C5 vs C525, E3 vs BE30) rakam/harf siniri denetler
+fn contains_exact(haystack: &str, patterns: &[&str]) -> bool {
+    let bytes = haystack.as_bytes();
+    patterns.iter().any(|pat| {
+        let mut start = 0;
+        while let Some(pos) = haystack[start..].find(pat) {
+            let abs = start + pos;
+            let left_ok = abs == 0 || !bytes[abs - 1].is_ascii_alphanumeric();
+            let right_idx = abs + pat.len();
+            let right_ok = right_idx >= bytes.len() || !bytes[right_idx].is_ascii_digit();
+            if left_ok && right_ok {
+                return true;
+            }
+            start = abs + 1;
+        }
+        false
+    })
+}
+
+fn heading_narrow_glyph(heading_deg: Option<f64>) -> &'static str {
+    let h = heading_deg.unwrap_or(0.0).rem_euclid(360.0);
+    if !(45.0..315.0).contains(&h) {
+        "▴"
+    } else if h < 135.0 {
+        "▸"
+    } else if h < 225.0 {
+        "▾"
+    } else {
+        "◂"
+    }
+}
+
+/// Uçağı platform tipine ve gövde modeline göre tek hücreli şekle sınıflandırır (emoji kullanılmaz)
+pub fn classify_aircraft_shape(track: &TargetTrack) -> (&'static str, Color) {
+    let cls = track
+        .airframe_or_vessel_class
+        .as_deref()
+        .unwrap_or("")
+        .to_uppercase();
+    let branch = track
+        .operator_branch
+        .as_deref()
+        .unwrap_or("")
+        .to_uppercase();
+    let info = track.info.to_uppercase();
+    let combined = format!("{} {} {}", cls, branch, info);
+
+    // 1. Keşif / ISR / AWACS / İHA / Stratejik Bombardıman
+    if contains_exact(
+        &combined,
+        &[
+            "RQ4", "RQ-4", "MQ9", "MQ-9", "MQ1", "E3", "E-3", "E4", "E-4", "E6", "E8",
+            "RC135", "RC-135", "P8", "P-8", "U2", "B52", "B-52", "B1B",
+        ],
+    ) || contains_any(
+        &combined,
+        &[
+            "RIVET", "AWACS", "GLOBAL HAWK", "REAPER", "BAYRAKTAR", "ANKA", "AKINCI",
+        ],
+    ) {
+        return ("✦", TELETEXT_YELLOW);
+    }
+
+    // 2. Askeri Helikopter / Sivil Helikopter / Tiltrotor
+    if contains_any(
+        &combined,
+        &[
+            "H60", "UH60", "S70", "S76", "S92", "EC35", "EC45", "EC55", "EC75",
+            "H135", "H145", "H160", "H175", "H225", "AS3", "AS5", "AW1", "A109",
+            "A139", "A169", "A189", "BELL", "B06", "B407", "B412", "B429", "R22",
+            "R44", "R66", "CH47", "AH64", "NH90", "LYNX", "EH10", "MI8", "MI17",
+            "T129", "V22", "HELI",
+        ],
+    ) {
+        return ("❖", TELETEXT_GREEN);
+    }
+
+    // 3. Havadan Yakıt İkmal Tankeri & Ağır Askeri Kargo
+    if contains_exact(
+        &combined,
+        &[
+            "KC135", "KC-135", "KC46", "KC-46", "KC10", "KC30", "C17", "C-17", "C5",
+            "C-5", "C130", "C-130", "C30J", "A400", "IL76", "AN12", "AN26", "C295",
+            "CN35", "C27J",
+        ],
+    ) || contains_any(&combined, &["MRTT", "TANKER"])
+    {
+        return ("◈", Color::Rgb(210, 132, 82));
+    }
+
+    // 4. Muharip Jet & Eğitim Jeti
+    if contains_exact(
+        &combined,
+        &[
+            "F16", "F-16", "F15", "F-15", "F18", "F-18", "F22", "F35", "F-35",
+            "EF20", "EUFI", "SU27", "SU30", "SU35", "T38", "T-38", "M346", "L39",
+            "TEX2", "FA-50", "T45",
+        ],
+    ) || contains_any(&combined, &["RAFAL", "MIG", "GRIP", "HAWK"])
+    {
+        return ("▲", TELETEXT_RED);
+    }
+
+    // 5. Geniş Gövdeli Ağır Yolcu / Kargo (Wide-body)
+    if contains_any(
+        &combined,
+        &[
+            "B74", "A38", "B77", "B78", "A35", "A33", "A34", "B76", "MD11", "DC10",
+        ],
+    ) {
+        return ("◆", TELETEXT_CYAN);
+    }
+
+    // 6. İş Jeti / Hafif Pervaneli / Turboprop (GA & Bizjet)
+    if contains_any(
+        &combined,
+        &[
+            "ATR", "AT4", "AT7", "DH8", "PC12", "PC21", "PC24", "BE2", "BE3", "BE9",
+            "B350", "C15", "C172", "C182", "C206", "C208", "C25", "C510", "C525",
+            "C56", "C68", "C75", "SR20", "SR22", "PA28", "PA34", "PA46", "DA40",
+            "DA42", "DA62", "GLF", "G280", "G550", "G650", "CL30", "CL35", "CL60",
+            "LJ", "FA50", "FA7X", "FA8X", "E50P", "E55P", "HDJT", "SF50",
+        ],
+    ) {
+        return ("▫", FG_PRIMARY);
+    }
+
+    if track.is_military {
+        return ("▲", Color::Rgb(210, 132, 82));
+    }
+
+    // 7. Standart Dar Gövde & Bölgesel Jetler (A320/B737/E190 - Rota yönüne göre ok)
+    (heading_narrow_glyph(track.heading_deg), TELETEXT_CYAN)
 }
 
 pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
@@ -694,11 +833,16 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
             }
         };
 
+        let use_shapes = state.map_aircraft_shapes;
         for (sorted_pos, buf_idx, sx, sy) in vis_civ {
             let Some(track) = state.air_targets.get(buf_idx) else {
                 continue;
             };
-            let w = if zoom >= 2.5 {
+            let w = if use_shapes {
+                let (glyph, gcol) = classify_aircraft_shape(track);
+                put_overlay_str(buf, area, sx, sy, glyph, gcol, None, true);
+                1
+            } else if zoom >= 2.5 {
                 let text = format!("+{}", track.callsign);
                 put_overlay_str(buf, area, sx, sy, &text, TELETEXT_CYAN, None, true);
                 (text.chars().count() as u16).max(1)
@@ -714,15 +858,26 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
             let Some(track) = state.air_targets.get(buf_idx) else {
                 continue;
             };
-            let text = format!("+{}", track.callsign);
-            put_overlay_str(buf, area, sx, sy, &text, mil_col, None, true);
-            let w = (text.chars().count() as u16).max(1);
+            let w = if use_shapes {
+                let (glyph, gcol) = classify_aircraft_shape(track);
+                put_overlay_str(buf, area, sx, sy, glyph, gcol, None, true);
+                1
+            } else {
+                let text = format!("+{}", track.callsign);
+                put_overlay_str(buf, area, sx, sy, &text, mil_col, None, true);
+                (text.chars().count() as u16).max(1)
+            };
             mark_cell(sx, sy, w, sorted_pos);
         }
 
         if let Some((sorted_pos, buf_idx, sx, sy)) = vis_sel {
             if let Some(track) = state.air_targets.get(buf_idx) {
-                let text = format!("[+ {}]", track.callsign);
+                let text = if use_shapes {
+                    let (glyph, _) = classify_aircraft_shape(track);
+                    format!("[{}]", glyph)
+                } else {
+                    format!("[+ {}]", track.callsign)
+                };
                 put_overlay_str(buf, area, sx, sy, &text, TELETEXT_YELLOW, None, true);
                 let w = (text.chars().count() as u16).max(1);
                 mark_cell(sx, sy, w, sorted_pos);
@@ -834,9 +989,14 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
     } else {
         ""
     };
+    let air_legend = if state.map_aircraft_shapes {
+        "[▲]Jet [✦]ISR [◈]Tnk [❖]Heli [◆]Gns [▴▸]Dar [▫]Hff"
+    } else {
+        "[+]Hava"
+    };
     let bottom_hud = format!(
-        " FOV:{:.0}km | Z:{:.1}x | {:.2}N,{:.2}E | [+]Hava [^]Deniz [*]Uydu [@]Deprem [#]Termal{} ",
-        fov_km, zoom, state.map_center_lat, state.map_center_lon, sdr_legend
+        " FOV:{:.0}km | Z:{:.1}x | {:.2}N,{:.2}E | {} [^]Deniz [*]Uydu [@]Deprem [#]Termal{} ",
+        fov_km, zoom, state.map_center_lat, state.map_center_lon, air_legend, sdr_legend
     );
     put_overlay_str(
         frame.buffer_mut(),
@@ -848,4 +1008,47 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         Some(BG_PRIMARY),
         false,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argus_core::types::{Domain, GeoPoint};
+    use chrono::Utc;
+
+    fn mock_air(cls: &str, mil: bool, hdg: f64) -> TargetTrack {
+        TargetTrack {
+            id: "abc123".to_string(),
+            callsign: "TEST".to_string(),
+            domain: Domain::Air,
+            geo: GeoPoint::new(40.0, 29.0, Some(10000.0)),
+            speed_kts: Some(450.0),
+            heading_deg: Some(hdg),
+            vertical_rate_fpm: None,
+            squawk: None,
+            is_military: mil,
+            operator_country: None,
+            operator_branch: None,
+            airframe_or_vessel_class: Some(cls.to_string()),
+            origin: None,
+            destination: None,
+            vessel_type: None,
+            info: String::new(),
+            last_seen: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_aircraft_platform_shape_classification() {
+        assert_eq!(classify_aircraft_shape(&mock_air("F16", true, 90.0)).0, "▲");
+        assert_eq!(classify_aircraft_shape(&mock_air("RQ-4B Global Hawk", true, 0.0)).0, "✦");
+        assert_eq!(classify_aircraft_shape(&mock_air("C17", true, 120.0)).0, "◈");
+        assert_eq!(classify_aircraft_shape(&mock_air("A400", true, 120.0)).0, "◈");
+        assert_eq!(classify_aircraft_shape(&mock_air("UH60", true, 45.0)).0, "❖");
+        assert_eq!(classify_aircraft_shape(&mock_air("B789", false, 270.0)).0, "◆");
+        assert_eq!(classify_aircraft_shape(&mock_air("C172", false, 180.0)).0, "▫");
+        assert_eq!(classify_aircraft_shape(&mock_air("C525", false, 180.0)).0, "▫");
+        assert_eq!(classify_aircraft_shape(&mock_air("A321", false, 90.0)).0, "▸");
+        assert_eq!(classify_aircraft_shape(&mock_air("B738", false, 270.0)).0, "◂");
+    }
 }

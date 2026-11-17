@@ -35,6 +35,7 @@ const WEB_MAP_HTML: &str = r#"<!DOCTYPE html>
   <label><input type="checkbox" id="chkSea" checked/> Deniz</label>
   <label><input type="checkbox" id="chkSat" checked/> Uydu</label>
   <label><input type="checkbox" id="chkGeo" checked/> Deprem/Termal/CBRN</label>
+  <label><input type="checkbox" id="chkShapes"/> Platform Sekilleri</label>
 </div>
 <div id="map"></div>
 <script>
@@ -46,6 +47,82 @@ const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png
 L.control.layers({ "Karanlik Taktik (CartoDB)": darkLayer, "Uydu (Esri)": satLayer, "OpenStreetMap": osmLayer }).addTo(map);
 
 const layerGroup = L.layerGroup().addTo(map);
+const shapeCanvas = document.createElement('canvas');
+shapeCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:450;';
+map.getContainer().appendChild(shapeCanvas);
+let visibleAirForShapes = [];
+
+function classifyKind(a) {
+  const txt = ((a.cls || '') + ' ' + (a.info || '')).toUpperCase();
+  if (/\b(RQ4|RQ-4|MQ9|MQ-9|MQ1|E3|E-3|E4|E-4|E6|E8|RC135|AWACS|P8|P-8|U2|B52)\b|GLOBAL HAWK|REAPER|BAYRAKTAR|ANKA/.test(txt)) return 'isr';
+  if (/\b(H60|UH60|S70|S76|S92|EC35|EC45|H135|H145|A139|CH47|AH64|LYNX|MI8|T129|V22)|AS3|AW1|BELL|R44|R66|HELI/.test(txt)) return 'heli';
+  if (/\b(KC135|KC46|KC10|MRTT|TANKER|C17|C5|C130|C30J|A400|IL76|C295|CN35)\b/.test(txt)) return 'tanker';
+  if (/\b(F16|F-16|F15|F18|F22|F35|EF20|EUFI|RAFAL|SU27|SU30|SU35|MIG|T38|M346|TEX2|FA-50|GRIP)\b/.test(txt)) return 'fighter';
+  if (/B74|A38|B77|B78|A35|A33|A34|B76|MD11/.test(txt)) return 'wide';
+  if (/ATR|AT7|DH8|PC12|PC21|C172|C182|C208|C525|C56|SR22|DA40|GLF|G550|G650|CL60|LJ|E55P/.test(txt)) return 'light';
+  return a.mil ? 'fighter' : 'narrow';
+}
+
+function drawShape(ctx, x, y, kind, hdg, col) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(((hdg || 0) * Math.PI) / 180);
+  ctx.fillStyle = col;
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  if (kind === 'fighter') {
+    ctx.moveTo(0, -8); ctx.lineTo(5, 4); ctx.lineTo(0, 2); ctx.lineTo(-5, 4); ctx.closePath(); ctx.fill();
+  } else if (kind === 'isr') {
+    ctx.moveTo(0, -7); ctx.lineTo(0, 7); ctx.moveTo(-10, 0); ctx.lineTo(10, 0); ctx.moveTo(-3, 5); ctx.lineTo(3, 5); ctx.stroke();
+  } else if (kind === 'tanker') {
+    ctx.moveTo(0, -8); ctx.lineTo(0, 7); ctx.moveTo(-9, -1); ctx.lineTo(9, 2); ctx.moveTo(-4, 6); ctx.lineTo(4, 6); ctx.stroke();
+  } else if (kind === 'heli') {
+    ctx.moveTo(-6, -6); ctx.lineTo(6, 6); ctx.moveTo(-6, 6); ctx.lineTo(6, -6); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, 2.2, 0, Math.PI * 2); ctx.fill();
+  } else if (kind === 'wide') {
+    ctx.moveTo(0, -8); ctx.lineTo(2, -2); ctx.lineTo(9, 2); ctx.lineTo(2, 2); ctx.lineTo(1, 7); ctx.lineTo(4, 8); ctx.lineTo(-4, 8); ctx.lineTo(-1, 7); ctx.lineTo(-2, 2); ctx.lineTo(-9, 2); ctx.lineTo(-2, -2); ctx.closePath(); ctx.fill();
+  } else if (kind === 'light') {
+    ctx.moveTo(0, -5); ctx.lineTo(5, 1); ctx.lineTo(-5, 1); ctx.closePath(); ctx.fill();
+  } else {
+    ctx.moveTo(0, -6); ctx.lineTo(5, 3); ctx.lineTo(0, 1); ctx.lineTo(-5, 3); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function redrawShapesOverlay() {
+  const size = map.getSize();
+  shapeCanvas.width = size.x;
+  shapeCanvas.height = size.y;
+  const ctx = shapeCanvas.getContext('2d');
+  ctx.clearRect(0, 0, size.x, size.y);
+  if (!document.getElementById('chkShapes').checked) return;
+  for (const a of visibleAirForShapes) {
+    const pt = map.latLngToContainerPoint([a.lat, a.lon]);
+    if (pt.x < -15 || pt.y < -15 || pt.x > size.x + 15 || pt.y > size.y + 15) continue;
+    const kind = classifyKind(a);
+    const col = a.mil ? '#e06c58' : (kind === 'wide' ? '#76a2c2' : (kind === 'heli' ? '#6aaa80' : '#9cc2dd'));
+    drawShape(ctx, pt.x, pt.y, kind, a.hdg, col);
+  }
+}
+
+map.on('move zoom resize', redrawShapesOverlay);
+map.on('click', (ev) => {
+  if (!document.getElementById('chkShapes').checked) return;
+  const cp = map.latLngToContainerPoint(ev.latlng);
+  let best = null, bestD = 12;
+  for (const a of visibleAirForShapes) {
+    const pt = map.latLngToContainerPoint([a.lat, a.lon]);
+    const d = Math.hypot(pt.x - cp.x, pt.y - cp.y);
+    if (d < bestD) { bestD = d; best = a; }
+  }
+  if (best) {
+    L.popup().setLatLng([best.lat, best.lon])
+      .setContent(`<b>${best.cs}</b> (${best.id})<br>Model: ${best.cls || '-'} | Bolge: ${best.aor} | Rota: ${best.rt || '-'}<br>${best.info}`)
+      .openOn(map);
+  }
+});
+
 let milOnly = false;
 document.getElementById('milOnly').onclick = function() {
   milOnly = !milOnly;
@@ -59,7 +136,7 @@ document.getElementById('aor').onchange = function() {
   else if (v === 'ALL') map.setView([20, 15], 2);
   refresh();
 };
-['chkSea', 'chkSat', 'chkGeo'].forEach(id => document.getElementById(id).onchange = refresh);
+['chkSea', 'chkSat', 'chkGeo', 'chkShapes'].forEach(id => document.getElementById(id).onchange = refresh);
 
 async function refresh() {
   try {
@@ -69,9 +146,11 @@ async function refresh() {
     const showSea = document.getElementById('chkSea').checked;
     const showSat = document.getElementById('chkSat').checked;
     const showGeo = document.getElementById('chkGeo').checked;
+    const useShapes = document.getElementById('chkShapes').checked;
 
     layerGroup.clearLayers();
-    L.circleMarker([d.station_lat, d.station_lon], { renderer: canvasRenderer, radius: 6, color: '#38bdf8', fillOpacity: 0.9 })
+    visibleAirForShapes = [];
+    L.circleMarker([d.station_lat, d.station_lon], { renderer: canvasRenderer, radius: 6, color: '#ccaa60', fillOpacity: 0.9 })
       .bindPopup('ISTASYON MERKEZI').addTo(layerGroup);
 
     let airShown = 0;
@@ -79,7 +158,11 @@ async function refresh() {
       if (milOnly && !a.mil) continue;
       if (aor !== 'ALL' && a.aor !== aor) continue;
       airShown++;
-      const col = a.mil ? '#ef4444' : '#38bdf8';
+      if (useShapes) {
+        visibleAirForShapes.push(a);
+        continue;
+      }
+      const col = a.mil ? '#d28452' : '#76a2c2';
       L.circleMarker([a.lat, a.lon], {
         renderer: canvasRenderer,
         radius: a.mil ? 4.5 : 2.3,
@@ -88,9 +171,10 @@ async function refresh() {
         fillOpacity: a.mil ? 0.9 : 0.65,
         weight: a.mil ? 1.5 : 0.8
       })
-      .bindPopup(`<b>${a.cs}</b> (${a.id})<br>Bolge: ${a.aor} | Rota: ${a.rt || '-'}<br>${a.info}`)
+      .bindPopup(`<b>${a.cs}</b> (${a.id})<br>Model: ${a.cls || '-'} | Bolge: ${a.aor} | Rota: ${a.rt || '-'}<br>${a.info}`)
       .addTo(layerGroup);
     }
+    redrawShapesOverlay();
 
     if (showSea) {
       for (const s of d.sea) {
@@ -192,6 +276,8 @@ fn build_state_json(state: &Arc<RwLock<AppState>>) -> String {
                 "lat": t.geo.lat,
                 "lon": t.geo.lon,
                 "mil": t.is_military,
+                "cls": t.airframe_or_vessel_class.as_deref().unwrap_or(""),
+                "hdg": t.heading_deg.unwrap_or(0.0),
                 "aor": t.origin.as_deref().unwrap_or("KURESEL"),
                 "rt": t.destination.as_deref().unwrap_or(""),
                 "info": t.info,
