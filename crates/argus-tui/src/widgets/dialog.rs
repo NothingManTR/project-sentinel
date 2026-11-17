@@ -148,6 +148,61 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
                 }
             }
         }
+        if let Some(t) = state.inspected_target() {
+            let cs_key = t.callsign.trim().to_uppercase();
+            if let Some(sched) = state.flight_schedule_cache.get(&cs_key) {
+                lines.push(Line::from(Span::styled(
+                    format!("--- UCUS ROTASI & PROGRAM ({}) ---", sched.source),
+                    Style::default().fg(TELETEXT_CYAN).add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "Kalkis                : {} ({})",
+                        sched.origin_code.as_deref().unwrap_or("-"),
+                        sched.origin_name.as_deref().unwrap_or("Meydan")
+                    ),
+                    Style::default().fg(TELETEXT_YELLOW),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "Varis                 : {} ({})",
+                        sched.dest_code.as_deref().unwrap_or("-"),
+                        sched.dest_name.as_deref().unwrap_or("Meydan")
+                    ),
+                    Style::default().fg(TELETEXT_GREEN),
+                )));
+                if let (Some(dlon), Some(dlat)) = (sched.dest_lon, sched.dest_lat) {
+                    let rem_km = argus_core::geo::haversine_km(t.geo.lat, t.geo.lon, dlat, dlon);
+                    let spd_kmh = t.speed_kts.unwrap_or(0.0) * 1.852;
+                    let eta_str = if spd_kmh > 80.0 {
+                        let mins = ((rem_km / spd_kmh) * 60.0).round() as u64;
+                        format!("~{} sa {} dk", mins / 60, mins % 60)
+                    } else {
+                        "-".to_string()
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("Kalan Mesafe / ETA    : {:.0} km | {}", rem_km, eta_str),
+                        Style::default().fg(TELETEXT_CYAN),
+                    )));
+                }
+                if let Some(st_txt) = &sched.status {
+                    lines.push(Line::from(Span::styled(
+                        format!("Ucus Durumu           : {}", st_txt),
+                        Style::default().fg(FG_PRIMARY),
+                    )));
+                }
+                if sched.scheduled_off.is_some() || sched.estimated_on.is_some() {
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "Planli / Tahmini      : {} -> {}",
+                            sched.scheduled_off.as_deref().unwrap_or("-"),
+                            sched.estimated_on.as_deref().unwrap_or("-")
+                        ),
+                        Style::default().fg(FG_SECONDARY),
+                    )));
+                }
+            }
+        }
         if text_area.width >= 56 && text_area.height >= 8 {
             let split = Layout::default()
                 .direction(Direction::Horizontal)

@@ -3,7 +3,10 @@ pub mod aircraft_photo;
 pub mod aisstream;
 pub mod celestrak;
 pub mod cisa_kev;
+pub mod defcon_osint;
 pub mod eam_sigint;
+pub mod flight_schedule;
+pub mod gemini_intel;
 pub mod ioda_outages;
 pub mod kiwisdr;
 pub mod nasa_firms;
@@ -13,7 +16,9 @@ pub mod opensky;
 pub mod safecast_radiation;
 pub mod shodan;
 pub mod sigint_dsp;
+pub mod subsea_cables;
 pub mod usgs_seismic;
+pub mod weather_owm;
 
 use argus_core::state::AppState;
 use parking_lot::RwLock;
@@ -285,6 +290,89 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                     }
                 }
                 sleep(Duration::from_secs(45)).await;
+            }
+        });
+    }
+
+    // 12. Küresel OSINT DEFCON & PizzINT Hazırlık Durumu Görevi
+    {
+        let st = Arc::clone(&state);
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_default();
+            loop {
+                if let Some(defcon) = defcon_osint::fetch_osint_defcon(&client).await {
+                    let mut lock = st.write();
+                    lock.defcon_status = Some(defcon);
+                    lock.total_events_received = lock.total_events_received.wrapping_add(1);
+                }
+                sleep(Duration::from_secs(180)).await;
+            }
+        });
+    }
+
+    // 13. K-1: Küresel Denizaltı Fiber Kabloları Katmanı
+    {
+        let st = Arc::clone(&state);
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(20))
+                .user_agent("Project-Sentinel/0.1")
+                .build()
+                .unwrap_or_default();
+            loop {
+                let cables = subsea_cables::fetch_subsea_cables(&client).await;
+                if !cables.is_empty() {
+                    let mut lock = st.write();
+                    lock.subsea_cables = cables;
+                }
+                sleep(Duration::from_secs(43200)).await;
+            }
+        });
+    }
+
+    // 14. A-3: OpenWeatherMap Anlık Meteoroloji Gözlemi (Opsiyonel Anahtar Varsa)
+    if let Some(owm_key) = cfg.api_keys.openweather_key.clone().filter(|k| !k.trim().is_empty()) {
+        let st = Arc::clone(&state);
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap_or_default();
+            loop {
+                let (slat, slon) = {
+                    let r = st.read();
+                    (r.station_lat, r.station_lon)
+                };
+                let (station_wx, points) =
+                    weather_owm::fetch_weather_snapshot(&client, &owm_key, slat, slon).await;
+                if station_wx.is_some() || !points.is_empty() {
+                    let mut lock = st.write();
+                    if station_wx.is_some() {
+                        lock.station_weather = station_wx;
+                    }
+                    if !points.is_empty() {
+                        lock.weather_points = points;
+                    }
+                }
+                sleep(Duration::from_secs(600)).await;
+            }
+        });
+    }
+
+    // 15. K-4: Çapraz-Alan Füzyon & Hava/Deniz İz Anomalisi Motoru
+    {
+        let st = Arc::clone(&state);
+        tokio::spawn(async move {
+            sleep(Duration::from_secs(6)).await;
+            loop {
+                {
+                    let mut lock = st.write();
+                    argus_core::fusion::recompute_fusion_and_anomalies(&mut lock);
+                }
+                sleep(Duration::from_secs(8)).await;
             }
         });
     }

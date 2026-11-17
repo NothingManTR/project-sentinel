@@ -48,6 +48,8 @@ pub enum HitTarget {
     RegionPreset(usize),
     OpenWebMap,
     ExportReport,
+    TriggerAiAnalysis,
+    DefconBadge,
 }
 
 #[derive(Debug, Clone, Default)]

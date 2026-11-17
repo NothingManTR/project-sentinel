@@ -412,12 +412,13 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
 
     let st_lon = state.station_lon;
     let st_lat = state.station_lat;
+    let cables_on = (state.geoint_layers & 256 != 0) && !state.subsea_cables.is_empty();
     let style_tag: u8 = match state.map_style {
         MapRenderStyle::HalfBlockTerrain => 0,
         MapRenderStyle::HalfBlockDarkTile => 1,
         MapRenderStyle::HalfBlockSatellite => 2,
         MapRenderStyle::BrailleVector => 3,
-    };
+    } | if cables_on { 8 } else { 0 };
     let cache_key: MapCacheKey = (
         area.width,
         area.height,
@@ -507,6 +508,27 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 draw_culled_vectors(ctx, NE_50M_BORDERS, x_min, x_max, y_min, y_max, min_seg_deg, border_col);
                 // C. Küresel Göller ve İç Denizler
                 draw_culled_vectors(ctx, NE_50M_LAKES, x_min, x_max, y_min, y_max, min_seg_deg, lake_col);
+                // C2. K-1 Küresel Denizaltı Fiber Kabloları (Opsiyonel Bit 8)
+                if cables_on {
+                    let cable_col = Color::Rgb(58, 128, 126);
+                    for cable in &state.subsea_cables {
+                        for seg in &cable.lines {
+                            for pair in seg.windows(2) {
+                                let (x1, y1) = pair[0];
+                                let (x2, y2) = pair[1];
+                                if (x1 - x2).abs() > 180.0
+                                    || x1.max(x2) < x_min
+                                    || x1.min(x2) > x_max
+                                    || y1.max(y2) < y_min
+                                    || y1.min(y2) > y_max
+                                {
+                                    continue;
+                                }
+                                ctx.draw(&CanvasLine { x1, y1, x2, y2, color: cable_col });
+                            }
+                        }
+                    }
+                }
                 // D. Küresel Kıyı Şeritleri ve Adalar
                 draw_culled_vectors(ctx, NE_50M_COASTLINES, x_min, x_max, y_min, y_max, min_seg_deg, coast_col);
                 // E. Bölgesel Ultra-Yüksek Çözünürlüklü Kıyılar (1:10m)
@@ -952,6 +974,67 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                     },
                     HitTarget::MapTarget(3, idx),
                 );
+            }
+        }
+    }
+
+    // A-3: OpenWeatherMap Anlık Meteoroloji İstasyonları (Opsiyonel Bit 9)
+    if state.geoint_layers & 512 != 0 {
+        for wp in state.weather_points.iter().chain(state.station_weather.iter()) {
+            if let Some((sx, sy)) = to_screen(wp.lon, wp.lat) {
+                let lbl = format!("{:.0}C/{:.0}kt", wp.temp_c, wp.wind_kts);
+                put_overlay_str(frame.buffer_mut(), area, sx, sy, &lbl, TELETEXT_CYAN, Some(BG_SURFACE), false);
+            }
+        }
+    }
+
+    // K-4: Çoklu-Sensör Füzyon Kriz Kümeleri (Bit 10)
+    if state.geoint_layers & 1024 != 0 {
+        for fc in &state.fusion_clusters {
+            if let Some((sx, sy)) = to_screen(fc.lon, fc.lat) {
+                let lbl = format!("[FUZ:{}]", fc.score);
+                put_overlay_str(frame.buffer_mut(), area, sx, sy, &lbl, TELETEXT_RED, Some(BG_PRIMARY), true);
+            }
+        }
+    }
+
+    // A-2: Seçili Uçağın Planlı Kalkış -> Uçak -> Varış Büyük Daire Rota Yayı
+    if let Some(sel_id) = &state.selected_target_id {
+        if let Some(track) = state.air_targets.iter().find(|t| &t.id == sel_id) {
+            let cs_key = track.callsign.trim().to_uppercase();
+            if let Some(sched) = state.flight_schedule_cache.get(&cs_key) {
+                let draw_arc = |frame: &mut Frame, lon1: f64, lat1: f64, lon2: f64, lat2: f64, col: Color| {
+                    let steps = 28;
+                    for s in 1..steps {
+                        let f = (s as f64) / (steps as f64);
+                        let p_lon = lon1 + (lon2 - lon1) * f;
+                        let p_lat = lat1 + (lat2 - lat1) * f;
+                        if let Some((sx, sy)) = to_screen(p_lon, p_lat) {
+                            let buf = frame.buffer_mut();
+                            if buf[(sx, sy)].symbol() == " " {
+                                put_overlay_str(buf, area, sx, sy, ".", col, None, true);
+                            }
+                        }
+                    }
+                };
+                if let (Some(olat), Some(olon)) = (sched.origin_lat, sched.origin_lon) {
+                    if (olon - track.geo.lon).abs() < 180.0 {
+                        draw_arc(frame, olon, olat, track.geo.lon, track.geo.lat, TELETEXT_GREEN);
+                    }
+                    if let Some((ox, oy)) = to_screen(olon, olat) {
+                        let tag = format!("[{}]", sched.origin_code.as_deref().unwrap_or("ORIG"));
+                        put_overlay_str(frame.buffer_mut(), area, ox, oy, &tag, TELETEXT_GREEN, Some(BG_PRIMARY), true);
+                    }
+                }
+                if let (Some(dlat), Some(dlon)) = (sched.dest_lat, sched.dest_lon) {
+                    if (track.geo.lon - dlon).abs() < 180.0 {
+                        draw_arc(frame, track.geo.lon, track.geo.lat, dlon, dlat, TELETEXT_YELLOW);
+                    }
+                    if let Some((dx, dy)) = to_screen(dlon, dlat) {
+                        let tag = format!("[{}]", sched.dest_code.as_deref().unwrap_or("DEST"));
+                        put_overlay_str(frame.buffer_mut(), area, dx, dy, &tag, TELETEXT_YELLOW, Some(BG_PRIMARY), true);
+                    }
+                }
             }
         }
     }

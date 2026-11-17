@@ -1,4 +1,5 @@
 pub mod config;
+pub mod fusion;
 pub mod geo;
 pub mod mouse;
 pub mod state;

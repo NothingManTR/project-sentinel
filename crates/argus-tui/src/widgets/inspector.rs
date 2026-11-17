@@ -121,9 +121,9 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),   // Seçili Hedef / Kayıt Teknik Telemetrisi
-            Constraint::Length(6), // Hızlı Operasyonel Aksiyon Butonları
-            Constraint::Length(7), // Canlı Alarm & İzleme Listesi (Watchlist) Özeti
+            Constraint::Min(11),   // Secili Hedef / Kayit Teknik Telemetrisi + Foto
+            Constraint::Length(3), // Kompakt Tek Satir Operasyonel Komut Seridi
+            Constraint::Length(7), // Canli Alarm & Izleme Listesi (Watchlist) Ozeti
         ])
         .split(area);
 
@@ -336,6 +336,36 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
                     Span::styled(sq, Style::default().fg(TELETEXT_CYAN)),
                 ]));
             }
+            if let Some(anom) = state.track_anomalies.get(&t.id) {
+                lines.push(Line::from(vec![
+                    Span::styled("Anomali     : ", Style::default().fg(FG_SECONDARY)),
+                    Span::styled(
+                        format!("[!] {}", anom),
+                        Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            }
+            if t.domain == Domain::Air {
+                let cs_key = t.callsign.trim().to_uppercase();
+                if let Some(sched) = state.flight_schedule_cache.get(&cs_key) {
+                    let route_str = format!(
+                        "{} -> {}",
+                        sched.origin_code.as_deref().unwrap_or("?"),
+                        sched.dest_code.as_deref().unwrap_or("?")
+                    );
+                    lines.push(Line::from(vec![
+                        Span::styled("Ucus Rotasi : ", Style::default().fg(FG_SECONDARY)),
+                        Span::styled(route_str, Style::default().fg(TELETEXT_YELLOW)),
+                    ]));
+                } else if let Some(rt) = &t.destination {
+                    if !rt.trim().is_empty() {
+                        lines.push(Line::from(vec![
+                            Span::styled("Ucus Rotasi : ", Style::default().fg(FG_SECONDARY)),
+                            Span::styled(rt.clone(), Style::default().fg(TELETEXT_YELLOW)),
+                        ]));
+                    }
+                }
+            }
             lines.push(Line::from(vec![
                 Span::styled("Son Rapor   : ", Style::default().fg(FG_SECONDARY)),
                 Span::styled(
@@ -407,38 +437,39 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), detail_inner);
     }
 
-    // 2. Hızlı Operasyonel Aksiyon Butonları (Tıklanabilir)
-    let actions = [
-        ("[G] Haritada Hedefe Odakla", 0, TELETEXT_CYAN),
-        ("[F] Otomatik Takip Kilidi Ac/Kapat", 1, TELETEXT_GREEN),
-        ("[B] Izleme Listesine (Watchlist) Ekle", 2, TELETEXT_YELLOW),
-        ("[Ctrl+E] Durum Raporu Disa Aktar (.md)", 3, FG_PRIMARY),
+    // 2. Kompakt Tek Satir Operasyonel Komut Butonlari (Tiklanabilir)
+    let act_pills = [
+        ("[G:Odak]", HitTarget::InspectorAction(0), TELETEXT_CYAN),
+        ("[F:Takip]", HitTarget::InspectorAction(1), TELETEXT_GREEN),
+        ("[B:Izle]", HitTarget::InspectorAction(2), TELETEXT_YELLOW),
+        ("[Rapor]", HitTarget::InspectorAction(3), FG_PRIMARY),
+        ("[A:AI]", HitTarget::TriggerAiAnalysis, TELETEXT_YELLOW),
     ];
-    let mut act_lines = Vec::new();
-    for (i, (label, act_id, col)) in actions.iter().enumerate() {
-        act_lines.push(Line::from(Span::styled(
-            *label,
-            Style::default().fg(*col).add_modifier(Modifier::BOLD),
-        )));
-        let r_y = chunks[1].y + 1 + i as u16;
-        if r_y < chunks[1].y + chunks[1].height.saturating_sub(1) {
+    let mut pill_spans = Vec::new();
+    let mut px = chunks[1].x + 1;
+    let py = chunks[1].y + 1;
+    let max_x = chunks[1].x + chunks[1].width.saturating_sub(1);
+    for (lbl, target, col) in act_pills {
+        let pw = lbl.chars().count() as u16;
+        if px + pw <= max_x {
+            pill_spans.push(Span::styled(
+                lbl,
+                Style::default().fg(col).bg(BG_SURFACE).add_modifier(Modifier::BOLD),
+            ));
+            pill_spans.push(Span::raw(" "));
             state.hit_tester.register(
-                Rect {
-                    x: chunks[1].x + 1,
-                    y: r_y,
-                    width: chunks[1].width.saturating_sub(2),
-                    height: 1,
-                },
-                HitTarget::InspectorAction(*act_id),
+                Rect { x: px, y: py, width: pw, height: 1 },
+                target,
             );
+            px += pw + 1;
         }
     }
 
-    let act_p = Paragraph::new(act_lines).block(
+    let act_p = Paragraph::new(Line::from(pill_spans)).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_DIM))
-            .title(" [OPERASYONEL KOMUTLAR (TIKLA)] ")
+            .title(" [KOMUTLAR (TIKLA)] ")
             .style(Style::default().bg(BG_PANEL)),
     );
     frame.render_widget(act_p, chunks[1]);
@@ -461,14 +492,25 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
             Span::styled(a.message.clone(), Style::default().fg(c)),
         ]));
     }
+    if !state.fusion_clusters.is_empty() && alert_lines.len() < 4 {
+        for fc in state.fusion_clusters.iter().take(2) {
+            alert_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("[FUZ:{}] ", fc.score),
+                    Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(fc.summary.clone(), Style::default().fg(TELETEXT_CYAN)),
+            ]));
+        }
+    }
     if alert_lines.is_empty() {
         alert_lines.push(Line::from(Span::styled(
-            "Aktif kritik alarm yok. (180km askeri yaklasma ve Squawk 7700 izleniyor)",
+            "Alarm yok (180km askeri, 7x00 & Fuzyon aktif)",
             Style::default().fg(FG_MUTED),
         )));
     }
 
-    let alert_p = Paragraph::new(alert_lines).block(
+    let alert_p = Paragraph::new(alert_lines).wrap(Wrap { trim: true }).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_DIM))

@@ -9,6 +9,10 @@ auto_ip_location = true
 shodan_key = "YOUR_SHODAN_API_KEY"
 aisstream_key = "YOUR_AISSTREAM_API_KEY"
 nasa_firms_key = "YOUR_NASA_FIRMS_KEY"
+gemini_key = ""
+gemini_model = "gemini-3.8-flash"
+openweather_key = ""
+flightaware_key = ""
 
 [acled]
 email = "your_email@example.com"

@@ -66,9 +66,12 @@ impl App {
                     needs_redraw = true;
                 }
 
-                // T-Dossier açıldıysa anında, Inspector'da seçili uçak sabit kaldıysa 350ms sonra fotoğraf çek
+                // T-Dossier açıldıysa anında, Inspector'da seçili uçak sabit kaldıysa 350ms sonra fotoğraf + rota çek
                 if let Some(d_icao) = st.dialog_aircraft_icao.clone() {
                     Self::spawn_aircraft_photo(&self.state, &mut st, &d_icao);
+                    if let Some(t) = st.inspected_target().filter(|t| t.id.eq_ignore_ascii_case(&d_icao)) {
+                        Self::spawn_flight_schedule(&self.state, &mut st, &t);
+                    }
                 } else if !st.is_dialog_open && !matches!(st.selected_domain, 3 | 30 | 50) {
                     if let Some(t) = st.inspected_target().filter(|t| t.domain == Domain::Air) {
                         let icao = t.id.to_lowercase();
@@ -89,11 +92,19 @@ impl App {
                             }
                         } else if self.photo_ctx.inspector_changed_at.elapsed()
                             >= Duration::from_millis(350)
-                            && !st.aircraft_photo_cache.contains_key(&icao)
-                            && !st.inflight_photo_icaos.contains(&icao)
                         {
-                            Self::spawn_aircraft_photo(&self.state, &mut st, &icao);
-                            needs_redraw = true;
+                            if !st.aircraft_photo_cache.contains_key(&icao)
+                                && !st.inflight_photo_icaos.contains(&icao)
+                            {
+                                Self::spawn_aircraft_photo(&self.state, &mut st, &icao);
+                                needs_redraw = true;
+                            }
+                            let cs_key = t.callsign.trim().to_uppercase();
+                            if !st.flight_schedule_cache.contains_key(&cs_key)
+                                && !st.inflight_schedule_keys.contains(&cs_key)
+                            {
+                                Self::spawn_flight_schedule(&self.state, &mut st, &t);
+                            }
                         }
                     }
                 }
@@ -860,6 +871,14 @@ impl App {
                 let _ = st.export_intelligence_report();
                 self.audio.play(SoundEffect::Blip);
             }
+            KeyCode::Char('A') => {
+                Self::spawn_ai_sitrep(&self.state, &mut st);
+                self.audio.play(SoundEffect::Blip);
+            }
+            KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+                Self::spawn_ai_sitrep(&self.state, &mut st);
+                self.audio.play(SoundEffect::Blip);
+            }
             KeyCode::Char('+') | KeyCode::Char('=') => {
                 st.map_zoom = (st.map_zoom * 1.25).min(50.0);
             }
@@ -1137,6 +1156,14 @@ impl App {
                             Self::toggle_map_aircraft_shapes(&mut st);
                             self.audio.play(SoundEffect::Click);
                         }
+                        HitTarget::DefconBadge => {
+                            Self::open_defcon_dialog(&mut st);
+                            self.audio.play(SoundEffect::Blip);
+                        }
+                        HitTarget::TriggerAiAnalysis => {
+                            Self::spawn_ai_sitrep(&self.state, &mut st);
+                            self.audio.play(SoundEffect::Blip);
+                        }
                         HitTarget::MapTarget(tile_idx, row_idx) => {
                             Self::select_item_for_inspector(&mut st, tile_idx, row_idx);
                             if is_double_click && Self::open_item_dossier(&mut st, tile_idx, row_idx) {
@@ -1363,6 +1390,137 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn spawn_flight_schedule(
+        state_arc: &Arc<RwLock<AppState>>,
+        st: &mut AppState,
+        track: &TargetTrack,
+    ) {
+        let cs = track.callsign.trim().to_uppercase();
+        if cs.len() < 3 || cs == track.id.to_uppercase() {
+            return;
+        }
+        if st.flight_schedule_cache.contains_key(&cs) || !st.inflight_schedule_keys.insert(cs.clone())
+        {
+            return;
+        }
+        let known_route = track.destination.clone();
+        let fa_key = st.config.api_keys.flightaware_key.clone();
+        let state_arc = Arc::clone(state_arc);
+        tokio::spawn(async move {
+            let res = argus_ingest::flight_schedule::fetch_flight_schedule(
+                &cs,
+                known_route.as_deref(),
+                fa_key.as_deref(),
+            )
+            .await;
+            let mut lock = state_arc.write();
+            lock.inflight_schedule_keys.remove(&cs);
+            if let Some(info) = res {
+                if lock.flight_schedule_cache.len() >= 128 {
+                    lock.flight_schedule_cache.clear();
+                }
+                lock.flight_schedule_cache.insert(cs, info);
+                lock.total_events_received = lock.total_events_received.wrapping_add(1);
+            }
+        });
+    }
+
+    fn open_defcon_dialog(st: &mut AppState) {
+        if let Some(d) = &st.defcon_status {
+            let mut lines = vec![
+                format!("=== KURESEL OSINT DEFCON SEVIYESI: DEFCON {} ===", d.overall_level),
+                format!("Veri Kaynagi          : {}", d.source),
+                format!("Son Guncelleme (UTC)  : {}", d.updated_at.format("%Y-%m-%d %H:%M:%S")),
+            ];
+            if let Some(idx) = d.doughcon_index {
+                lines.push(format!("PizzINT Doughcon Indx : {}", idx));
+            }
+            if !d.commands.is_empty() {
+                lines.push("--- BOLGESEL MUHARIP KOMUTANLIK SEVIYELERI ---".to_string());
+                for (cmd, lvl) in &d.commands {
+                    let tag = if *lvl <= 2 { "[!] YUKSEK HAZIRLIK" } else { "Hazirlik" };
+                    lines.push(format!("{:<22}: DEFCON {} ({})", cmd, lvl, tag));
+                }
+            }
+            st.open_dialog(format!("OSINT DEFCON {} DURUMU", d.overall_level), lines);
+        } else {
+            st.open_dialog(
+                "OSINT DEFCON DURUMU",
+                vec![
+                    "=== OSINT DEFCON & PIZZINT VERISI ===".to_string(),
+                    "defconlevel.com ve PizzINT verileri arka planda cekiliyor...".to_string(),
+                ],
+            );
+        }
+    }
+
+    fn spawn_ai_sitrep(state_arc: &Arc<RwLock<AppState>>, st: &mut AppState) {
+        if st.ai_analysis_running {
+            return;
+        }
+        let key_opt = st
+            .config
+            .api_keys
+            .gemini_key
+            .clone()
+            .filter(|k| !k.trim().is_empty());
+        let Some(api_key) = key_opt else {
+            st.open_dialog(
+                "GEMINI AI ANALIZ ARACI (KURULUM)",
+                vec![
+                    "=== GEMINI API ANAHTARI GEREKLI ===".to_string(),
+                    "Canli AI istihbarat raporu olusturmak icin config.toml veya ortam degiskeni tanimlayin:".to_string(),
+                    "1) config.toml [api_keys] altina ekleyin:".to_string(),
+                    "   gemini_key = \"AIza...\"".to_string(),
+                    "   gemini_model = \"gemini-3.8-flash\"  # (opsiyonel)".to_string(),
+                    "2) Veya baslatmadan once ortam degiskeni verin:".to_string(),
+                    "   export ARGUS_GEMINI_KEY=\"AIza...\"".to_string(),
+                ],
+            );
+            return;
+        };
+
+        let model_opt = st.config.api_keys.gemini_model.clone();
+        let prompt = argus_ingest::gemini_intel::build_tactical_prompt(st);
+        st.ai_analysis_running = true;
+        st.live_status = "GEMINI AI DURUM RAPORU OLUSTURULUYOR...".to_string();
+
+        let state_arc = Arc::clone(state_arc);
+        tokio::spawn(async move {
+            let res = argus_ingest::gemini_intel::generate_ai_sitrep(
+                &api_key,
+                model_opt.as_deref(),
+                &prompt,
+            )
+            .await;
+            let mut lock = state_arc.write();
+            lock.ai_analysis_running = false;
+            match res {
+                Ok(report) => {
+                    let now = Utc::now();
+                    lock.ai_last_report = Some((now, report.clone()));
+                    lock.live_status = "GEMINI AI SITREP HAZIR".to_string();
+                    let lines: Vec<String> = report.lines().map(|l| l.to_string()).collect();
+                    lock.open_dialog(
+                        format!("GEMINI AI ANALIZ RAPORU ({} UTC)", now.format("%H:%M")),
+                        lines,
+                    );
+                }
+                Err(e) => {
+                    lock.live_status = "GEMINI AI HATA".to_string();
+                    lock.open_dialog(
+                        "GEMINI AI ANALIZ HATASI",
+                        vec![
+                            "=== API ISTEGI BASARISIZ ===".to_string(),
+                            format!("Detay: {}", e),
+                        ],
+                    );
+                }
+            }
+            lock.total_events_received = lock.total_events_received.wrapping_add(1);
+        });
     }
 
     fn spawn_aircraft_photo(state_arc: &Arc<RwLock<AppState>>, st: &mut AppState, icao: &str) {

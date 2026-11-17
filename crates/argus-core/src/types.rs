@@ -424,3 +424,64 @@ pub enum AircraftMediaStatus {
         reason: String,
     },
 }
+
+/// Küresel OSINT DEFCON & Muharip Komutanlık Hazırlık Durumu (defconlevel.com + PizzINT)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefconStatus {
+    pub overall_level: u8,
+    pub source: String,
+    pub commands: Vec<(String, u8)>,
+    pub doughcon_index: Option<i64>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// K-1: Küresel Denizaltı Fiber Kablo Hattı (TeleGeography Submarine Cable Map)
+#[derive(Debug, Clone)]
+pub struct SubseaCable {
+    pub id: String,
+    pub name: String,
+    pub color_hex: String,
+    pub lines: Vec<Vec<(f64, f64)>>, // (lon, lat) segmentleri
+}
+
+/// A-3: OpenWeatherMap Anlık Hava & Rüzgar Gözlemi
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeatherPoint {
+    pub name: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub temp_c: f64,
+    pub wind_kts: f64,
+    pub wind_deg: f64,
+    pub clouds_pct: u8,
+    pub visibility_km: f64,
+    pub condition: String,
+}
+
+/// A-2: Resmi Uçuş Programı & Rota Özeti (FlightAware AeroAPI / hexdb.io)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlightScheduleInfo {
+    pub ident: String,
+    pub origin_code: Option<String>,
+    pub origin_name: Option<String>,
+    pub dest_code: Option<String>,
+    pub dest_name: Option<String>,
+    pub origin_lat: Option<f64>,
+    pub origin_lon: Option<f64>,
+    pub dest_lat: Option<f64>,
+    pub dest_lon: Option<f64>,
+    pub status: Option<String>,
+    pub scheduled_off: Option<String>,
+    pub estimated_on: Option<String>,
+    pub source: String,
+}
+
+/// K-4: Çoklu-Sensör Çapraz Korelasyon Kriz Kümesi
+#[derive(Debug, Clone)]
+pub struct FusionCluster {
+    pub lat: f64,
+    pub lon: f64,
+    pub score: u32,
+    pub domains: Vec<String>,
+    pub summary: String,
+}

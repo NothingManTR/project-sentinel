@@ -27,6 +27,10 @@ pub struct ApiKeysConfig {
     pub shodan_key: Option<String>,
     pub aisstream_key: Option<String>,
     pub nasa_firms_key: Option<String>,
+    pub gemini_key: Option<String>,
+    pub gemini_model: Option<String>,
+    pub openweather_key: Option<String>,
+    pub flightaware_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -113,6 +117,26 @@ impl AppConfig {
         if let Ok(val) = std::env::var("ARGUS_ACLED_PASSWORD") {
             if !val.trim().is_empty() {
                 self.acled.password = Some(val);
+            }
+        }
+        if let Ok(val) = std::env::var("ARGUS_GEMINI_KEY").or_else(|_| std::env::var("GEMINI_API_KEY")) {
+            if !val.trim().is_empty() {
+                self.api_keys.gemini_key = Some(val);
+            }
+        }
+        if let Ok(val) = std::env::var("ARGUS_GEMINI_MODEL") {
+            if !val.trim().is_empty() {
+                self.api_keys.gemini_model = Some(val);
+            }
+        }
+        if let Ok(val) = std::env::var("ARGUS_OPENWEATHER_KEY") {
+            if !val.trim().is_empty() {
+                self.api_keys.openweather_key = Some(val);
+            }
+        }
+        if let Ok(val) = std::env::var("ARGUS_FLIGHTAWARE_KEY") {
+            if !val.trim().is_empty() {
+                self.api_keys.flightaware_key = Some(val);
             }
         }
     }

@@ -39,14 +39,14 @@ Sistemde sentetik veri uretimi veya yapay simulasyon bulunmaz; tum telemetri dog
 
 | Disiplin | Kisayol | Canli Veri Kaynaklari & Protokoller |
 | :--- | :--- | :--- |
-| **GEOINT (Harita)** | `F2` | Natural Earth `1:50m` & `1:10m` vektor harita, `720x360` kara/deniz maskesi, `http://127.0.0.1:8090` Canvas Leaflet Web Harita (15.000+ hedef, AOR & FIRMS/Safecast/GPS-JAM katmanlari) |
-| **AIRINT (Hava)** | `F3` / `H` | Coklu kaynak kuresel ADS-B (`opendata.adsb.fi`, `api.adsb.lol`, 20 bolgeli kuresel mozaik + `OpenSky`), AOR siniflandirmasi, `ROTA` kolonu, askeri filo tespiti ve terminal ici canli ucak fotografi (`Planespotters` + `hexdb.io`, `Sixel` / `Halfblocks`) |
+| **GEOINT (Harita)** | `F2` | Natural Earth `1:50m` & `1:10m` vektor harita, `720x360` kara/deniz maskesi, K-1 TeleGeography denizalti fiber kablolari (`[ :Kablo]`), K-4 coklu sensor fuzyon kureleri (`[x:Fuz]`), `http://127.0.0.1:8090` Canvas Leaflet Web Harita |
+| **AIRINT (Hava)** | `F3` / `H` | Coklu kaynak kuresel ADS-B (`opendata.adsb.fi`, `api.adsb.lol`, 20 bolgeli kuresel mozaik + `OpenSky`), AOR siniflandirmasi, `ROTA` kolonu, A-2 ucus programi/ETA/buyuk daire rota yayi (`FlightAware AeroAPI` + ucretsiz `hexdb.io`), K-4 askeri `ORBIT/CAP` yorunge tespiti ve terminal ici ucak fotografi |
 | **SEAINT (Deniz)** | `F4` / `D` | Kuresel `AISStream` WebSocket (`10.000` gemi kapasitesi), MID bayrak devleti cozumlemesi, stratejik bogaz/kanal alarm koridorlari ve harp gemisi tespiti |
 | **SIGINT (Radyo/EAM)** | `F5` | Canli `KiwiSDR` (`/kiwi/<ts>/SND`) PCM ses akisi, serbest frekans (`F`), `USB/LSB/AM/CW` mod (`U`), alici kilidi (`L`), canli `.wav` kayit (`V`), 60-bin DFT selalesi, 300 alici ve `eam.watch` EAM/SKYKING |
-| **OSINT (Haber)** | `F6` | Kuresel kriz ve acik kaynak haber RSS akislari + Denetci paneli |
+| **OSINT (Haber & DEFCON)** | `F6` | Kuresel kriz & RSS akislari, canli kamuya acik **OSINT DEFCON** (`defconlevel.com` + `pizzint.watch` bolgesel komut bazli DEFCON 1..5 gostergesi) ve Gemini API (`gemini-3.8-flash`) yerlesik AI durum raporu (**SITREP**, `Shift+A` / `[AI:SITREP]`) |
 | **CYBERINT (Siber)** | `F7` | Karanlik C4ISR Shodan / InternetDB hizli tarama on ayarlari, CISA KEV ve IODA BGP kesinti takibi |
 | **SATINT (Uydu)** | `F8` | CelesTrak GP TLE + `sgp4` yorunge hesaplayici + 90 dakikalik yer izi (`ground_track`) projeksiyonu |
-| **MASINT (Jeofizik)** | `F9` | USGS, Kandilli & EMSC (`seismicportal.eu`) canli deprem agi, NASA FIRMS VIIRS termal noktalar, Safecast CBRN radyasyon ve NOAA SWPC uzay havasi |
+| **MASINT (Jeofizik & Hava)** | `F9` | USGS, Kandilli & EMSC (`seismicportal.eu`) deprem agi, NASA FIRMS VIIRS, Safecast CBRN, NOAA SWPC ve A-3 OpenWeatherMap katmani (`[ :Meteo]`) |
 | **Donatilar** | `F10` / `F11` | Karanlik C4ISR Taktik Not Defteri (`notes.txt`) ve Birim Ceviricili Taktik Hesap Makinesi |
 
 ---
@@ -58,7 +58,7 @@ Sistemde sentetik veri uretimi veya yapay simulasyon bulunmaz; tum telemetri dog
 - Sistem ses gelistirme paketleri (`libasound2-dev` / `alsa-lib`, `pkg-config`)
 
 ### 1. Yapilandirma
-API anahtari gerektiren opsiyonel kaynaklar (`AISStream`, `NASA FIRMS`, `Shodan`, `ACLED`) icin ornek dosyayi kopyalayin veya ortam degiskenlerini ayarlayin:
+API anahtari gerektiren opsiyonel kaynaklar (`AISStream`, `NASA FIRMS`, `Shodan`, `ACLED`, `Gemini AI`, `OpenWeatherMap`, `FlightAware AeroAPI`) icin ornek dosyayi kopyalayin veya ortam degiskenlerini ayarlayin:
 
 ```bash
 cp config.example.toml config.toml
@@ -69,8 +69,11 @@ Alternatif olarak ortam degiskenleri de desteklenir:
 - `ARGUS_FIRMS_KEY`
 - `ARGUS_SHODAN_KEY`
 - `ARGUS_ACLED_EMAIL` / `ARGUS_ACLED_PASSWORD`
+- `ARGUS_GEMINI_KEY` (veya `GEMINI_API_KEY`) + `ARGUS_GEMINI_MODEL` (varsayilan: `gemini-3.8-flash`)
+- `ARGUS_OPENWEATHER_KEY`
+- `ARGUS_FLIGHTAWARE_KEY`
 
-*(API anahtari girilmeden de Kuresel Hava Radari, KiwiSDR HF Radyo, CelesTrak Uydular, USGS/Kandilli Deprem, CISA KEV/IODA, Safecast, NOAA ve OSINT beslemeleri calisir.)*
+*(API anahtari girilmeden de Kuresel Hava Radari, `hexdb.io` rota ozeti, K-1 TeleGeography Denizalti Kablolari, OSINT DEFCON, KiwiSDR HF Radyo, CelesTrak Uydular, USGS/Kandilli Deprem, CISA KEV/IODA, Safecast, NOAA ve OSINT beslemeleri calisir.)*
 
 ### 2. Derleme ve Calistirma
 
@@ -89,7 +92,8 @@ cargo build --release
 - **`G` / `F` / `B`**: Haritada Odakla / Otomatik Takip Kilidi / Izleme Listesi (`Watchlist`)
 - **Hava Radari (`F3`)**: `1` Kuresel Tumu, `2` CENTCOM Tumu, `3` CENTCOM Askeri, `4` Kuresel Askeri, `5` TR/EUCOM, `6` Acil Squawk, `Enter` / `O` (Fotografli Tam Ucak Dosyasi)
 - **SIGINT (`F5`)**: `S` (Canli KiwiSDR Sesini Ac/Kapat), `1`–`9` (HF Frekans Secimi), `F` (Serbest kHz Frekansi Gir), `U` (Mod: `USB`/`LSB`/`AM`/`CW`), `L` (Oto-Alici Degistirmeyi Kilitle/Ac), `V` (`recordings/` Altina `.wav` Kayit Ac/Kapat), `T` (Opsiyonel Otonom Bant Tarayici), `X` (Opsiyonel VOX Oto-WAV Kaydi), `C` (Opsiyonel 600Hz CW Morze Cozucu), `/` (Alici Arama), `Yukari/Asagi/PgUp/PgDn` + `Enter` (300 Alicida Gez & Baglan), `Tab` (Alici/EAM Odagi), `N` (Sonraki Alici)
-- **Harita (`F1`/`F2`)**: `[ :SDR]` katman dugmesi ile 300 KiwiSDR alicisini haritada gorme ve tek tikla baglanma; `P` veya `[ :Sekil]` ile ucaklari yazi yerine platform tipi/modeline gore sekille gosterme (`▲` Jet, `✦` ISR, `◈` Tanker/Kargo, `❖` Heli, `◆` Genis Govde, `▴▸▾◂` Dar Govde, `▫` Hafif)
+- **Harita (`F1`/`F2`)**: `[ :SDR]` ile 300 KiwiSDR alicisi, `[ :Kablo]` ile K-1 denizalti fiber kablolari, `[ :Meteo]` ile A-3 OpenWeatherMap hava katmani, `[x:Fuz]` ile K-4 coklu sensor fuzyonu; `P` veya `[ :Sekil]` ile ucak platform sekilleri (`▲` Jet, `✦` ISR, `◈` Tanker/Kargo, `❖` Heli, `◆` Genis Govde, `▴▸▾◂` Dar Govde, `▫` Hafif)
+- **OSINT DEFCON & AI SITREP**: Ust banttaki `DEFCON` rozetine tiklayarak bolgesel komut bazli duruma (`CENTCOM`, `EUCOM`, `INDOPACOM` vb.) bakabilir, `Shift+A` / `Ctrl+A` veya `[AI:SITREP]` dugmesi ile canli telemetriden Gemini AI Durum Raporu uretebilirsiniz
 - **MASINT (`F9`)**: `1`–`3` veya sekme tiklama (`Sismik`, `CBRN & Termal`, `Uzay Havasi`)
 - **`W`**: Tarayicida canli `http://127.0.0.1:8090` Canvas Leaflet web haritasini ac
 - **`Ctrl+E`**: Anlik istihbarat raporunu Markdown olarak disa aktar

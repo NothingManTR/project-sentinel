@@ -16,8 +16,8 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),  // Frekans Tuneri & Presetler
-            Constraint::Min(14),    // Gercek KiwiSDR DFT Selalesi & Canli SDR Alici Secici
+            Constraint::Length(5),  // Frekans Tuneri, Presetler & Ayri Durum Seridi
+            Constraint::Min(13),    // Gercek KiwiSDR DFT Selalesi & Canli SDR Alici Secici
             Constraint::Length(11), // Canli EAM Akisi Tablosu
         ])
         .split(area);
@@ -122,6 +122,7 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     register_tuner_btn(state, &mut cur_x, audio_btn_label, HitTarget::ToggleRadioAudio);
     register_tuner_btn(state, &mut cur_x, failover_btn_label, HitTarget::ToggleSdrAutoFailover);
     register_tuner_btn(state, &mut cur_x, rec_btn_label, HitTarget::ToggleSdrRecord);
+    cur_x += 4; // "  │  " ayirici genisligi (5 - 1)
     register_tuner_btn(state, &mut cur_x, scan_btn_label, HitTarget::ToggleSdrScanner);
     register_tuner_btn(state, &mut cur_x, vox_btn_label, HitTarget::ToggleSdrVox);
     register_tuner_btn(state, &mut cur_x, cw_btn_label, HitTarget::ToggleSdrCw);
@@ -209,9 +210,9 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let cw_status = toggle_span(cw_btn_label, state.sdr_cw_enabled, TELETEXT_CYAN);
 
     let extra_status = if !state.sdr_rec_path.is_empty() {
-        format!(" | {} [{}]", state.sdr_status, state.sdr_rec_path)
+        format!("DURUM: {} [{}]", state.sdr_status, state.sdr_rec_path)
     } else {
-        format!(" | {}", state.sdr_status)
+        format!("DURUM: {}", state.sdr_status)
     };
 
     let tuner_p = Paragraph::new(vec![
@@ -238,15 +239,15 @@ pub fn render_sigint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
             failover_status,
             Span::raw(" "),
             rec_status,
-            Span::raw(" "),
+            Span::raw("  │  "),
             scan_status,
             Span::raw(" "),
             vox_status,
             Span::raw(" "),
             cw_status,
-            Span::styled(extra_status, Style::default().fg(FG_SECONDARY)),
         ]),
         Line::from(preset_spans),
+        Line::from(Span::styled(extra_status, Style::default().fg(FG_SECONDARY))),
     ])
     .block(
         Block::default()

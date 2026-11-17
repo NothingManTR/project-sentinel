@@ -12,10 +12,10 @@ const WEB_MAP_HTML: &str = r#"<!DOCTYPE html>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
-  html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #070b14; font-family: monospace; color: #e2e8f0; }
-  #hud { position: absolute; top: 10px; left: 50px; z-index: 1000; background: rgba(11,18,32,0.94); border: 1px solid #38bdf8; padding: 8px 12px; font-size: 12px; border-radius: 4px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  select, button { background: #162238; color: #38bdf8; border: 1px solid #334155; padding: 3px 8px; font-family: monospace; cursor: pointer; font-size: 12px; }
-  button.active { background: #38bdf8; color: #070b14; font-weight: bold; }
+  html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; background: #0f1115; font-family: monospace; color: #dce0e6; }
+  #hud { position: absolute; top: 10px; left: 50px; z-index: 1000; background: rgba(21,24,30,0.95); border: 1px solid #6e86a0; padding: 8px 12px; font-size: 12px; border-radius: 4px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  select, button { background: #1e232b; color: #76a2c2; border: 1px solid #343b46; padding: 3px 8px; font-family: monospace; cursor: pointer; font-size: 12px; }
+  button.active { background: #ccaa60; color: #0f1115; font-weight: bold; }
   label { cursor: pointer; user-select: none; }
 </style>
 </head>
@@ -35,6 +35,7 @@ const WEB_MAP_HTML: &str = r#"<!DOCTYPE html>
   <label><input type="checkbox" id="chkSea" checked/> Deniz</label>
   <label><input type="checkbox" id="chkSat" checked/> Uydu</label>
   <label><input type="checkbox" id="chkGeo" checked/> Deprem/Termal/CBRN</label>
+  <label><input type="checkbox" id="chkCables"/> Denizalti Kablo</label>
   <label><input type="checkbox" id="chkShapes"/> Platform Sekilleri</label>
 </div>
 <div id="map"></div>
@@ -47,6 +48,8 @@ const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png
 L.control.layers({ "Karanlik Taktik (CartoDB)": darkLayer, "Uydu (Esri)": satLayer, "OpenStreetMap": osmLayer }).addTo(map);
 
 const layerGroup = L.layerGroup().addTo(map);
+const cableGroup = L.layerGroup().addTo(map);
+let cablesLoaded = false;
 const shapeCanvas = document.createElement('canvas');
 shapeCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:450;';
 map.getContainer().appendChild(shapeCanvas);
@@ -137,6 +140,23 @@ document.getElementById('aor').onchange = function() {
   refresh();
 };
 ['chkSea', 'chkSat', 'chkGeo', 'chkShapes'].forEach(id => document.getElementById(id).onchange = refresh);
+document.getElementById('chkCables').onchange = async function() {
+  if (!this.checked) { cableGroup.clearLayers(); cablesLoaded = false; return; }
+  if (!cablesLoaded) {
+    try {
+      const r = await fetch('/api/cables');
+      const cables = await r.json();
+      cableGroup.clearLayers();
+      for (const c of cables) {
+        for (const seg of c.lines) {
+          L.polyline(seg.map(p => [p[1], p[0]]), { renderer: canvasRenderer, color: '#3a807e', weight: 1.2, opacity: 0.75 })
+            .bindPopup(`<b>KABLO:</b> ${c.name}`).addTo(cableGroup);
+        }
+      }
+      cablesLoaded = true;
+    } catch (e) {}
+  }
+};
 
 async function refresh() {
   try {
@@ -210,13 +230,27 @@ async function refresh() {
           .addTo(layerGroup);
       }
       for (const j of d.jams) {
-        L.circle([j.lat, j.lon], { radius: 85000, color: '#ec4899', fillOpacity: 0.12, weight: 1 })
+        L.circle([j.lat, j.lon], { radius: 85000, color: '#b86088', fillOpacity: 0.12, weight: 1 })
           .bindPopup(`<b>EW GPS-JAM</b>: ${j.lbl}`).addTo(layerGroup);
       }
     }
 
+    if (d.fusions) {
+      for (const fc of d.fusions) {
+        L.circle([fc.lat, fc.lon], { radius: 130000, color: '#c45e5a', fillOpacity: 0.18, weight: 1.5 })
+          .bindPopup(`<b>FUZYON SKOR ${fc.score}</b> (${fc.domains.join('+')})<br>${fc.summary}`).addTo(layerGroup);
+      }
+    }
+    if (d.weather) {
+      for (const w of d.weather) {
+        L.circleMarker([w.lat, w.lon], { renderer: canvasRenderer, radius: 5, color: '#76a2c2', fillOpacity: 0.5 })
+          .bindPopup(`<b>${w.name}</b>: ${w.temp.toFixed(1)}C | ${w.wind.toFixed(0)}kt | ${w.cond}`).addTo(layerGroup);
+      }
+    }
+
+    const defTxt = d.defcon ? `DEFCON ${d.defcon}` : 'DEFCON:--';
     document.getElementById('stats').innerText =
-      `SENTINEL CANLI | HAVA: ${airShown}/${d.air.length} | DENIZ: ${d.sea.length} | UYDU: ${d.sats.length} | DEPREM: ${d.quakes.length} | TERMAL: ${d.fires.length}`;
+      `SENTINEL | ${defTxt} | HAVA: ${airShown}/${d.air.length} | DENIZ: ${d.sea.length} | UYDU: ${d.sats.length} | FUZ: ${(d.fusions || []).length}`;
   } catch (e) {}
 }
 setInterval(refresh, 3000);
@@ -243,7 +277,15 @@ pub fn start_web_map_server(state: Arc<RwLock<AppState>>) {
                     return;
                 }
                 let req = String::from_utf8_lossy(&buf[..n]);
-                if req.starts_with("GET /api/state") {
+                if req.starts_with("GET /api/cables") {
+                    let body = build_cables_json(&st_clone);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                } else if req.starts_with("GET /api/state") {
                     let body = build_state_json(&st_clone);
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n{}",
@@ -346,9 +388,23 @@ fn build_state_json(state: &Arc<RwLock<AppState>>) -> String {
         .map(|(lat, lon, _, lbl)| serde_json::json!({ "lat": lat, "lon": lon, "lbl": lbl }))
         .collect();
 
+    let fusions: Vec<serde_json::Value> = st
+        .fusion_clusters
+        .iter()
+        .map(|f| serde_json::json!({ "lat": f.lat, "lon": f.lon, "score": f.score, "domains": f.domains, "summary": f.summary }))
+        .collect();
+
+    let weather: Vec<serde_json::Value> = st
+        .weather_points
+        .iter()
+        .chain(st.station_weather.iter())
+        .map(|w| serde_json::json!({ "name": w.name, "lat": w.lat, "lon": w.lon, "temp": w.temp_c, "wind": w.wind_kts, "cond": w.condition }))
+        .collect();
+
     serde_json::json!({
         "station_lat": st.station_lat,
         "station_lon": st.station_lon,
+        "defcon": st.defcon_status.as_ref().map(|d| d.overall_level),
         "air": air,
         "sea": sea,
         "sats": sats,
@@ -356,6 +412,18 @@ fn build_state_json(state: &Arc<RwLock<AppState>>) -> String {
         "fires": fires,
         "rads": rads,
         "jams": jams,
+        "fusions": fusions,
+        "weather": weather,
     })
     .to_string()
+}
+
+fn build_cables_json(state: &Arc<RwLock<AppState>>) -> String {
+    let st = state.read();
+    let list: Vec<serde_json::Value> = st
+        .subsea_cables
+        .iter()
+        .map(|c| serde_json::json!({ "name": c.name, "lines": c.lines }))
+        .collect();
+    serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string())
 }
