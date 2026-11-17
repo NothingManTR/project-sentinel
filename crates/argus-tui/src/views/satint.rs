@@ -45,11 +45,11 @@ pub fn render_satint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
         .y_bounds([-100.0, 100.0])
         .block(radar_block)
         .paint(|ctx| {
-            ctx.draw(&Circle { x: 0.0, y: 0.0, radius: 90.0, color: Color::Rgb(30, 62, 94) });
-            ctx.draw(&Circle { x: 0.0, y: 0.0, radius: 60.0, color: Color::Rgb(24, 50, 76) });
-            ctx.draw(&Circle { x: 0.0, y: 0.0, radius: 30.0, color: Color::Rgb(18, 38, 58) });
-            ctx.draw(&CanvasLine { x1: 0.0, y1: -95.0, x2: 0.0, y2: 95.0, color: Color::Rgb(30, 62, 94) });
-            ctx.draw(&CanvasLine { x1: -95.0, y1: 0.0, x2: 95.0, y2: 0.0, color: Color::Rgb(30, 62, 94) });
+            ctx.draw(&Circle { x: 0.0, y: 0.0, radius: 90.0, color: Color::Rgb(44, 56, 72) });
+            ctx.draw(&Circle { x: 0.0, y: 0.0, radius: 60.0, color: Color::Rgb(36, 46, 60) });
+            ctx.draw(&Circle { x: 0.0, y: 0.0, radius: 30.0, color: Color::Rgb(28, 36, 48) });
+            ctx.draw(&CanvasLine { x1: 0.0, y1: -95.0, x2: 0.0, y2: 95.0, color: Color::Rgb(44, 56, 72) });
+            ctx.draw(&CanvasLine { x1: -95.0, y1: 0.0, x2: 95.0, y2: 0.0, color: Color::Rgb(44, 56, 72) });
 
             for (idx, sat) in state.satellites.iter().enumerate() {
                 let az_rad = (sat.az_deg - 90.0).to_radians();

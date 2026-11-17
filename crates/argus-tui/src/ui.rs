@@ -90,9 +90,9 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let mil_air = state.air_targets.iter().filter(|t| t.is_military).count();
     let mil_sea = state.sea_targets.iter().filter(|t| t.is_military).count();
     let threat_badge = if !state.alerts.is_empty() || mil_air > 5 {
-        ("TEHDIT:YUKSEK", Color::Rgb(190, 30, 30))
+        ("TEHDIT:YUKSEK", Color::Rgb(145, 48, 48))
     } else {
-        ("TEHDIT:NORMAL", Color::Rgb(20, 110, 60))
+        ("TEHDIT:NORMAL", Color::Rgb(36, 92, 62))
     };
 
     let mut r0 = vec![

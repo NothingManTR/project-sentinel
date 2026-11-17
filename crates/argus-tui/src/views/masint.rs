@@ -4,7 +4,7 @@ use argus_core::state::AppState;
 use argus_core::theme::*;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
     Frame,
@@ -200,7 +200,7 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 } else if usvh >= 0.3 {
                     ("[!] YUKSEK FON", TELETEXT_YELLOW)
                 } else {
-                    ("NORMAL FON", Color::Rgb(50, 255, 120))
+                    ("NORMAL FON", TELETEXT_GREEN)
                 };
                 let loc = rad.location_name.as_deref().unwrap_or("Geiger Istasyonu");
                 rows.push(

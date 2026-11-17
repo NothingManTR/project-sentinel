@@ -238,36 +238,36 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
 
     let (ocean_bg, land_bg, coast_col, border_col, lake_col, grid_col) = match state.map_style {
         MapRenderStyle::HalfBlockTerrain => (
-            Color::Rgb(6, 13, 24),
-            Color::Rgb(16, 32, 28),
-            Color::Rgb(78, 200, 170),
-            Color::Rgb(42, 85, 105),
-            Color::Rgb(48, 135, 185),
-            Color::Rgb(14, 24, 38),
+            Color::Rgb(13, 17, 23),
+            Color::Rgb(24, 30, 32),
+            Color::Rgb(92, 146, 140),
+            Color::Rgb(54, 72, 84),
+            Color::Rgb(58, 108, 142),
+            Color::Rgb(22, 28, 36),
         ),
         MapRenderStyle::HalfBlockDarkTile => (
-            Color::Rgb(7, 10, 16),
-            Color::Rgb(18, 24, 34),
-            Color::Rgb(110, 160, 215),
-            Color::Rgb(50, 70, 95),
-            Color::Rgb(65, 115, 165),
-            Color::Rgb(16, 20, 30),
+            Color::Rgb(12, 15, 20),
+            Color::Rgb(22, 26, 33),
+            Color::Rgb(116, 148, 180),
+            Color::Rgb(56, 68, 84),
+            Color::Rgb(68, 104, 140),
+            Color::Rgb(22, 26, 34),
         ),
         MapRenderStyle::HalfBlockSatellite => (
-            Color::Rgb(6, 18, 34),
-            Color::Rgb(26, 42, 26),
-            Color::Rgb(140, 195, 120),
-            Color::Rgb(75, 105, 70),
-            Color::Rgb(55, 135, 195),
-            Color::Rgb(14, 28, 46),
+            Color::Rgb(12, 19, 28),
+            Color::Rgb(28, 36, 30),
+            Color::Rgb(126, 156, 118),
+            Color::Rgb(72, 88, 68),
+            Color::Rgb(60, 108, 148),
+            Color::Rgb(20, 28, 38),
         ),
         MapRenderStyle::BrailleVector => (
-            Color::Rgb(6, 11, 20),
-            Color::Rgb(12, 22, 36),
-            Color::Rgb(105, 205, 255),
-            Color::Rgb(45, 90, 135),
-            Color::Rgb(65, 150, 220),
-            Color::Rgb(16, 28, 44),
+            Color::Rgb(13, 16, 22),
+            Color::Rgb(19, 24, 32),
+            Color::Rgb(110, 158, 190),
+            Color::Rgb(54, 74, 96),
+            Color::Rgb(66, 116, 158),
+            Color::Rgb(22, 28, 38),
         ),
     };
 
@@ -376,7 +376,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 }
                 // F. İstanbul & Çanakkale Boğazları Mikro-Vektörleri
                 if zoom >= 1.8 {
-                    let fine_col = Color::Rgb(115, 235, 205);
+                    let fine_col = Color::Rgb(116, 174, 166);
                     draw_polyline_f64(ctx, BOGAZ_AVRUPA_VE_HALIC, fine_col);
                     draw_polyline_f64(ctx, BOGAZ_ANADOLU_VE_IZMIT, fine_col);
                     draw_polyline_f64(ctx, CANAKKALE_AVRUPA, fine_col);
@@ -403,7 +403,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                             x: st_lon,
                             y: st_lat,
                             radius: deg_radius,
-                            color: Color::Rgb(28, 52, 76),
+                            color: Color::Rgb(38, 52, 68),
                         });
                     }
                 }
@@ -490,7 +490,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
             sx,
             sy,
             "X",
-            Color::Rgb(0, 235, 255),
+            TELETEXT_YELLOW,
             None,
             true,
         );
@@ -536,7 +536,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                     sx,
                     sy,
                     "#",
-                    Color::Rgb(255, 90, 20),
+                    Color::Rgb(206, 122, 74),
                     None,
                     true,
                 );
@@ -605,7 +605,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 sx,
                 sy,
                 "[JAM]",
-                Color::Rgb(220, 50, 160),
+                Color::Rgb(184, 96, 136),
                 None,
                 true,
             );
@@ -709,7 +709,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
             mark_cell(sx, sy, w, sorted_pos);
         }
 
-        let mil_col = Color::Rgb(255, 110, 30);
+        let mil_col = Color::Rgb(210, 132, 82);
         for (sorted_pos, buf_idx, sx, sy) in vis_mil {
             let Some(track) = state.air_targets.get(buf_idx) else {
                 continue;

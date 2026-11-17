@@ -324,11 +324,11 @@ pub fn render_air_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
                 .add_modifier(Modifier::BOLD)
         } else if track.is_military {
             Style::default()
-                .fg(Color::Rgb(255, 210, 170))
+                .fg(Color::Rgb(218, 192, 168))
                 .bg(if offset % 2 == 0 {
-                    Color::Rgb(24, 14, 16)
+                    Color::Rgb(28, 22, 24)
                 } else {
-                    Color::Rgb(16, 10, 12)
+                    Color::Rgb(22, 18, 20)
                 })
         } else {
             Style::default()
