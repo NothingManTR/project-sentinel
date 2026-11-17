@@ -20,14 +20,14 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
     let max_w = if has_photo {
         114
     } else if is_long_report {
-        108
+        116
     } else {
         86
     };
     let max_h = if has_photo {
         30
     } else if is_long_report {
-        34
+        38
     } else {
         26
     };
@@ -109,15 +109,26 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
         .dialog_content
         .iter()
         .map(|s| {
-            if s.starts_with("---") || s.starts_with("===") {
+            let trimmed = s.trim_start();
+            if s.starts_with("---") || s.starts_with("===") || trimmed.starts_with('#') {
                 Line::from(Span::styled(
                     s.clone(),
                     Style::default().fg(TELETEXT_CYAN).add_modifier(Modifier::BOLD),
                 ))
-            } else if s.starts_with("[!]") || s.contains("KRITIK") || s.contains("ACIL") {
+            } else if s.starts_with("[!]")
+                || s.contains("KRITIK")
+                || s.contains("KRİTİK")
+                || s.contains("ACIL")
+                || s.contains("ACİL")
+            {
                 Line::from(Span::styled(
                     s.clone(),
                     Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD),
+                ))
+            } else if trimmed.contains("[NOKTA") || s.contains("Risk Skoru:") {
+                Line::from(Span::styled(
+                    s.clone(),
+                    Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
                 ))
             } else if s.starts_with("[*]") || s.starts_with(">") {
                 Line::from(Span::styled(

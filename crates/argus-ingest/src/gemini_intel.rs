@@ -6,8 +6,9 @@ use std::time::Duration;
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.8-flash";
 const FALLBACK_GEMINI_MODELS: &[&str] = &[
     "gemini-3.8-flash",
+    "gemini-3-flash-preview",
     "gemini-3.5-flash-lite",
-    "gemini-3.6-flash",
+    "gemini-3.1-flash-lite",
     "gemini-flash-lite-latest",
 ];
 
@@ -456,20 +457,22 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         })
         .collect();
 
-    // 11. ACLED Çatışma & OSINT Haberler
+    // 11. ACLED / GDELT Çatışma & OSINT Haberler
     let acled_top: Vec<String> = state
         .acled_events
         .iter()
-        .take(8)
+        .take(15)
         .map(|e| {
             format!(
-                "{} [{}/{}] {} ({} vs {}) Kayip:{}",
+                "{} [{}/{}] {} ({} vs {}) ({:.2},{:.2}) Kayip:{}",
                 e.event_date,
                 e.country,
                 e.location,
                 e.sub_event_type,
                 e.actor1,
                 e.actor2.as_deref().unwrap_or("-"),
+                e.lat,
+                e.lon,
                 e.fatalities
             )
         })
@@ -478,7 +481,7 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
     let top_news: Vec<String> = news_vec
         .iter()
         .rev()
-        .take(15)
+        .take(20)
         .map(|n| {
             format!(
                 "{} [{}|{}] {}",
@@ -491,15 +494,24 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         .collect();
 
     format!(
-        "Sen Project Sentinel (ARGUS C4ISR) kidemli istihbarat subayisin. Asagida sistemdeki TUM aktif sensor ve istihbarat disiplinlerinden toplanan CANLI telemetri yer almaktadir.\n\
-        Sadece asagidaki gercek verileri analiz et (hicbir hedef/olay uydurma; verisi 'Yok' veya 0 olan alanlari kisaca bos/temiz olarak belirt) ve Turkce, karar alici komuta duzeyinde kapsamli ama net bir TAKTIK DURUM RAPORU (SITREP) uret.\n\n\
-        ISTENEN RAPOR BASLIKLARI:\n\
-        1. GENEL TEHDIT & DEFCON DEGERLENDIRMESI\n\
-        2. ALARMLAR, ANOMALILER & ONCELIKLI HEDEFLER\n\
-        3. HAVA (AIRINT) / DENIZ (SEAINT) / UZAY (SATINT) HAREKETLERI\n\
-        4. SIGINT (KIWISDR & HFGCS EAM) / SIBER (CYBERINT) / CATISMA & OSINT\n\
-        5. MASINT (SISMIK, NASA FIRMS TERMAL, SAFECAST CBRN, UZAY & HAVA DURUMU)\n\
-        6. COKLU-SENSOR FUZYON & KOMUTA TAVSIYELERI (3-5 madde)\n\n\
+        "Sen Project Sentinel (ARGUS C4ISR) kidemli jeopolitik, savunma ve stratejik istihbarat bas analistisin (`Senior Strategic Intelligence Analyst`).\n\
+        Gorevin YALNIZCA anlik sensor sayilarini listelemek degil; asagida sistemdeki TUM aktif sensor ve istihbarat disiplinlerinden gelen CANLI telemetriyi, GENEL JEOPOLITIK BAGLAM, askeri doktrin, kritik deniz/hava gecitleri (Bogazlar, Kizildeniz, Hurmuz, Tayvan, Baltik, Karadeniz, Levant) ve tarihsel tirmanma kaliplariyla BIRLESTIREREK gelecege yonelik olasi savas/silahli catisma riski tasiyan noktalari (`Flashpoints`) ayrintili, somut ve ongoru odakli sekilde analiz etmektir.\n\n\
+        ANALITIK ILKELER:\n\
+        - 'Gozlemlenen Sensor Verisi' ile 'Stratejik Ongoru / Senaryo' ifadelerini acikca ayirt et; sensor sayilarinda ve cagri adlarinda kesinlikle veri uydurma.\n\
+        - Komutan gibi kisa emir cumleleri yerine bir istihbarat analisti gibi neden-sonuc, kuvvet konuslanmasi, lojistik/tanker/ISR isareti ve erken uyari gostergeleri uzerinden derinlemesine yorum yap.\n\
+        - Verisi 'Yok' veya 0 olan alanlari yalnizca tek satirda not et, asil agirligi aktif verilere ve yuksek riskli bolgelere ver.\n\n\
+        ISTENEN RAPOR YAPISI (TURKCE):\n\
+        1. STRATEJIK DURUM OZETI & DEFCON COZUMLEMESI (Kuresel/bolgesel DEFCON seviyelerinin mevcut askeri, siber ve OSINT gundemiyle stratejik baglantisi)\n\
+        2. OLASI SAVAS / CATISMA RISK NOKTALARI (`KEY FLASHPOINTS` — En az 5 somut nokta)\n\
+           Her bir nokta icin su sablonu kullan:\n\
+           * [NOKTA X: Bolge / Kritik Gecit & Koordinat veya Saha] | Risk Skoru: XX/100 (KRITIK/YUKSEK/ORTA) | Vade: 24-72s / 1-4 hafta\n\
+             - Gozlemlenen Canli Iz: (Bu sahadaki gercek ADS-B askeri/tanker/ISR, AIS gemi/anomali, GDELT catisma, GPS-JAM, FIRMS veya OSINT bulgulari)\n\
+             - Jeopolitik Dinamik & Tetikleyici Senaryo: (Genel jeopolitik gerilimle birlestirilmis olasi catisma veya savas tirmanma senaryosu)\n\
+             - Erken Uyari Gostergeleri (Points / Watchlist): (Durumun savas/catisma esigine gectigini kanitlayacak 2-3 somut on gosterge)\n\
+        3. COKLU-ALAN ETKILESIMI (K-1 Denizalti Kablo Kirilganligi, GPS Karistirma, Siber/IODA BGP, NASA FIRMS Termal & MASINT Etkileri)\n\
+        4. GELECEK SENARYO MATRISI & IZLEME NOKTALARI\n\
+           * En Olasi Senaryo (Baz) vs En Tehlikeli Tirmanma Senaryosu (Worst-Case)\n\
+           * Analist Izleme Listesi: Takip edilecek somut cagri adi / bogaz / frekans / bolge noktalari (4-6 madde)\n\n\
         === 1. KOMUTA & KONUM ===\n\
         Zaman: {} | Istasyon: {} ({}) @ {:.4}N, {:.4}E | Harita Odak: {:.2}N, {:.2}E (Zoom:{:.1}x) | KatmanMask: {:#06x}\n\
         Secili Hedef: {}\n\
@@ -681,7 +693,7 @@ pub async fn generate_ai_sitrep(
         let req_timeout = if idx == 0 && candidates.len() > 1 {
             Duration::from_secs(12)
         } else {
-            Duration::from_secs(35)
+            Duration::from_secs(50)
         };
 
         let resp = match client
