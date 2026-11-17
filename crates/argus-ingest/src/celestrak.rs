@@ -147,10 +147,8 @@ impl CelesTrakClient {
         let mut fetched = Vec::new();
         let urls = [
             "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
-            "https://celestrak.org/NORAD/elements/gp.php?CATNR=47306&FORMAT=tle",
-            "https://celestrak.org/NORAD/elements/gp.php?CATNR=41875&FORMAT=tle",
-            "https://celestrak.org/NORAD/elements/gp.php?CATNR=39030&FORMAT=tle",
-            "https://celestrak.org/NORAD/elements/gp.php?CATNR=20580&FORMAT=tle",
+            "https://live.ariss.org/iss.txt",
+            "https://www.amsat.org/tle/current/nasabare.txt",
         ];
 
         for url in urls {
@@ -181,10 +179,11 @@ impl CelesTrakClient {
                     }
                 }
             }
-            if fetched.len() >= 18 {
+            if fetched.len() >= 24 {
                 break;
             }
         }
+        fetched.truncate(28);
 
         // Eksik kalan temel uyduları yerleşik TLE kataloğundan tamamla
         for item in TLE_CATALOG {

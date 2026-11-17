@@ -248,12 +248,15 @@ pub async fn fetch_public_kiwisdr_nodes(client: &reqwest::Client) -> Vec<SdrNode
         }
     }
 
-    // Yüksek SNR ve boş kanal kapasitesine göre sırala, 300 küresel alıcıya kadar tut
+    // Yüksek SNR, boş kanal kapasitesi ve doğrudan bağlantılı (proxy olmayan) sunuculara öncelik ver
     nodes.sort_by(|a, b| {
         let free_a = a.users_max.saturating_sub(a.users) > 1;
         let free_b = b.users_max.saturating_sub(b.users) > 1;
+        let direct_a = !a.host_port.contains(".proxy.kiwisdr.com");
+        let direct_b = !b.host_port.contains(".proxy.kiwisdr.com");
         free_b
             .cmp(&free_a)
+            .then_with(|| direct_b.cmp(&direct_a))
             .then_with(|| b.snr.cmp(&a.snr))
     });
     nodes.truncate(300);
@@ -562,7 +565,11 @@ pub async fn run_kiwisdr_worker(state: Arc<RwLock<AppState>>) {
             }
 
             let snd_grace = if cur_auto_failover {
-                Duration::from_secs(4)
+                if !configured {
+                    Duration::from_millis(2500)
+                } else {
+                    Duration::from_secs(4)
+                }
             } else {
                 Duration::from_secs(25)
             };
@@ -907,7 +914,7 @@ mod tests {
         });
 
         let mut received_samples = 0usize;
-        for _ in 0..30 {
+        for _ in 0..80 {
             sleep(Duration::from_millis(250)).await;
             let st = state.read();
             let q_len: usize = st.sdr_audio_queue.lock().iter().map(|(_, v)| v.len()).sum();
