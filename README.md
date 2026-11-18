@@ -119,7 +119,7 @@ argus-osint/
 | Crate | Başlıca Modüller |
 | :--- | :--- |
 | **`argus-core`** | `config.rs`, `fusion.rs`, `geo.rs`, `mouse.rs`, `state.rs`, `theme.rs`, `types.rs` |
-| **`argus-ingest`** | `opensky.rs`, `aisstream.rs`, `kiwisdr.rs`, `sigint_dsp.rs`, `eam_sigint.rs`, `celestrak.rs`, `usgs_seismic.rs`, `nasa_firms.rs`, `safecast_radiation.rs`, `noaa_space.rs`, `weather_owm.rs`, `subsea_cables.rs`, `flight_schedule.rs`, `aircraft_photo.rs`, `defcon_osint.rs`, `news_wire.rs`, `cisa_kev.rs`, `ioda_outages.rs`, `shodan.rs`, `acled.rs`, `gemini_intel.rs` |
+| **`argus-ingest`** | `opensky.rs`, `aisstream.rs`, `kiwisdr.rs`, `sigint_dsp.rs`, `eam_sigint.rs`, `celestrak.rs`, `usgs_seismic.rs`, `nasa_firms.rs`, `safecast_radiation.rs`, `noaa_space.rs`, `weather_owm.rs`, `subsea_cables.rs`, `airspace_warnings.rs`, `flight_schedule.rs`, `aircraft_photo.rs`, `defcon_osint.rs`, `news_wire.rs`, `cisa_kev.rs`, `ioda_outages.rs`, `shodan.rs`, `acled.rs`, `gemini_intel.rs` |
 | **`argus-tui`** | `app.rs`, `ui.rs`, `web_map.rs`, `views/{dashboard,geoint,air_tracks,sea_tracks,sigint,osint,cyberint,satint,masint,notepad,calculator}.rs`, `widgets/{p100_map,inspector,dialog,table,shodan_panel}.rs` |
 
 ---
@@ -205,7 +205,8 @@ cargo build --release
 | :--- | :--- |
 | **`F1` – `F11`** | Modüller arası geçiş (`Özet`, `Harita`, `Hava`, `Deniz`, `SIGINT`, `OSINT`, `Siber`, `Uydu`, `MASINT`, `Not`, `Araç`) |
 | **`?` / `F12`** | Tam klavye kısayolları ve yardım penceresi |
-| **`Shift+A` / `Ctrl+A` / `[AI:SITREP]`** | Tüm canlı sensör verilerinden **Gemini AI Durum Raporu** oluştur |
+| **`Shift+A` / `Ctrl+A` / `[AI:SITREP]`** | Çok modlu **Gemini AI Analiz Aracını** aç (`1`: Küresel Flashpoint, `2`: Seçili Hedef, `3`: Bölgesel Kriz, `4`: Özel Soru, `R`: Yenile); üretilen raporlar `reports/` altına otomatik kaydedilir |
+| **`K` / `Ctrl+S` / `H` / `E`** *(Diyalogda)* | Açık AI raporunu/dosyayı `reports/*.md` kaydet (`K`/`Ctrl+S`), karanlık tema **HTML Brifing Paketi** üret (`H`), `notes.txt` içine ekle (`E`) |
 | **`Ctrl+E` / `[Rapor]`** | Anlık konsol raporunu `sentinel_report_*.md` olarak kaydet |
 | **`/`** | Küresel arama ve filtreleme |
 | **`W` / `[Web]`** | Tarayıcıda canlı `http://127.0.0.1:8090` Leaflet Web Haritasını aç |
@@ -217,12 +218,13 @@ cargo build --release
 - **Fare:** Sol tık sürükle (`Pan`), fare tekerleği veya `+`/`-` (`Zoom`), hedefe tek tık (`Denetçi`), çift tık veya `Enter`/`O` (`Fotoğraflı Tam Dosya`).
 - **`G` / `F` / `B`:** Haritada Odakla / Otomatik Takip Kilidi / Watchlist Ekle-Çıkar.
 - **`V` / `P`:** Harita render stili değiştir (`Topo`, `Gece`, `Arazi`, `Vektör`) / Uçakları platform şekliyle göster (`[ :Sekil]`).
-- **Üst Katman Düğmeleri:** `[x:Air]`, `[x:Sea]`, `[x:Sat]`, `[x:Fire]`, `[x:Geo]`, `[ :SDR]`, `[ :Kablo]` *(K-1)*, `[ :Meteo]` *(A-3)*, `[x:Fuz]` *(K-4)*.
+- **Üst Katman Düğmeleri:** `[x:Air]`, `[x:Sea]`, `[x:Sat]`, `[x:Fire]`, `[x:Geo]`, `[ :SDR]`, `[ :Kbl]` *(K-1)*, `[ :Met]` *(A-3)*, `[x:Fuz]` *(K-4)*, `[ :Ntm]` *(N-4 NOTAM/SIGMET/GPS-JAM Çokgenleri)*.
 - **Bölge Hızlı Odak:** `[TR]`, `[IST]`, `[D.Akd]`, `[Krdnz]`, `[CENT]`, `[Dunya]`.
 
-### SIGINT (`F5`) & MASINT (`F9`) Kontrolleri
+### SIGINT (`F5`), MASINT (`F9`) & Notlar/Arşiv (`F10`) Kontrolleri
 - **`F5` SIGINT:** `S` (Canlı KiwiSDR Ses Aç/Kapat), `1`–`9` (HF Ön Ayar Frekansları), `F` (Serbest kHz Girişi), `U` (Mod: `USB`/`LSB`/`AM`/`CW`), `L` (Oto-Alıcı Kilidi), `V` (`.wav` Kayıt), `T` (Bant Tarayıcı), `X` (VOX Oto-Kayıt), `C` (CW Morze Çözücü), `Tab` (Alıcı/EAM Odağı), `N` (Sonraki Alıcı).
 - **`F9` MASINT:** `1` Depremler, `2` NASA FIRMS Termal, `3` Safecast CBRN & NOAA Uzay Havası.
+- **`F10` Notlar & AI Rapor Arşivi:** `Tab` (Sol Dosya Arşivi `notes.txt` + `reports/*.md/*.html` ↔ Sağ Editör), `Ok`/`PgUp`/`PgDn`/Tekerlek (Kaydır & Dosya Seç), `Ctrl+S` (Kaydet), `Ctrl+N` (Yeni `.md` Not), `Ctrl+T` (Seçili Hedefi Ekle), `Ctrl+H` (HTML Brifing), `F5` (UTC Zaman Damgası), `Ctrl+D`/`Delete` (Arşiv Dosyası Sil).
 
 ---
 

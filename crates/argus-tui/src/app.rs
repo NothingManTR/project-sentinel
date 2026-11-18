@@ -171,25 +171,72 @@ impl App {
             return;
         }
 
-        // 1. Eğer diyalog açıksa Esc veya Enter ile kapat, yön tuşlarıyla kaydır, E ile Notepad'e aktar
+        // 1. Eğer diyalog açıksa (AI soru modu dahil) etkileşimleri yönet
         if st.is_dialog_open {
+            if st.dialog_title.contains("GEMINI AI") && st.ai_prompt_input_active {
+                match code {
+                    KeyCode::Esc => {
+                        st.ai_prompt_input_active = false;
+                        self.audio.play(SoundEffect::Click);
+                    }
+                    KeyCode::Enter => {
+                        st.ai_mode = 3;
+                        st.ai_prompt_input_active = false;
+                        Self::spawn_ai_sitrep(&self.state, &mut st, true);
+                        self.audio.play(SoundEffect::Blip);
+                    }
+                    KeyCode::Backspace => {
+                        st.ai_custom_prompt.pop();
+                    }
+                    KeyCode::Char(c) if st.ai_custom_prompt.chars().count() < 160 => {
+                        st.ai_custom_prompt.push(c);
+                    }
+                    _ => {}
+                }
+                return;
+            }
+
+            let is_ai_dialog = st.dialog_title.contains("GEMINI AI");
             match code {
                 KeyCode::Esc | KeyCode::Enter => {
+                    st.ai_prompt_input_active = false;
                     st.close_dialog();
                     self.audio.play(SoundEffect::Click);
                 }
+                KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(path) = st.save_dialog_to_markdown() {
+                        st.dialog_content.push(format!("[*] DOSYAYA KAYDEDILDI: {}", path));
+                    }
+                    self.audio.play(SoundEffect::Blip);
+                }
+                KeyCode::Char('k') | KeyCode::Char('K') => {
+                    if let Some(path) = st.save_dialog_to_markdown() {
+                        st.dialog_content.push(format!("[*] DOSYAYA KAYDEDILDI: {}", path));
+                    }
+                    self.audio.play(SoundEffect::Blip);
+                }
+                KeyCode::Char('h') | KeyCode::Char('H') => {
+                    if let Some(path) = st.export_html_briefing_deck() {
+                        st.dialog_content.push(format!("[*] HTML BRIFING KAYDEDILDI: {}", path));
+                    }
+                    self.audio.play(SoundEffect::Blip);
+                }
                 KeyCode::Char('e') | KeyCode::Char('E') => {
-                    let stamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-                    let exported = format!(
-                        "\n--- [{}] {} ---\n{}\n",
-                        stamp,
-                        st.dialog_title,
-                        st.dialog_content.join("\n")
-                    );
-                    st.notepad.content.push_str(&exported);
-                    st.save_notepad();
-                    st.dialog_content
-                        .push("[*] RAPOR notes.txt DOSYASINA AKTARILDI".to_string());
+                    Self::append_dialog_to_notepad(&mut st);
+                    self.audio.play(SoundEffect::Blip);
+                }
+                KeyCode::Char(c) if is_ai_dialog && ('1'..='3').contains(&c) => {
+                    st.ai_mode = (c as usize) - ('1' as usize);
+                    Self::spawn_ai_sitrep(&self.state, &mut st, true);
+                    self.audio.play(SoundEffect::Blip);
+                }
+                KeyCode::Char('4') if is_ai_dialog => {
+                    st.ai_mode = 3;
+                    st.ai_prompt_input_active = true;
+                    self.audio.play(SoundEffect::Click);
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') if is_ai_dialog => {
+                    Self::spawn_ai_sitrep(&self.state, &mut st, true);
                     self.audio.play(SoundEffect::Blip);
                 }
                 KeyCode::Up => st.dialog_scroll = st.dialog_scroll.saturating_sub(1),
@@ -357,10 +404,35 @@ impl App {
                 }
             }
             ActiveView::Notepad => {
-                if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('s') {
-                    st.save_notepad();
-                    self.audio.play(SoundEffect::Blip);
-                    return;
+                if modifiers.contains(KeyModifiers::CONTROL) {
+                    match code {
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            Self::run_notepad_action(&mut st, 0);
+                            self.audio.play(SoundEffect::Blip);
+                            return;
+                        }
+                        KeyCode::Char('t') | KeyCode::Char('T') => {
+                            Self::run_notepad_action(&mut st, 2);
+                            self.audio.play(SoundEffect::Blip);
+                            return;
+                        }
+                        KeyCode::Char('n') | KeyCode::Char('N') => {
+                            Self::run_notepad_action(&mut st, 3);
+                            self.audio.play(SoundEffect::Blip);
+                            return;
+                        }
+                        KeyCode::Char('h') | KeyCode::Char('H') => {
+                            Self::run_notepad_action(&mut st, 4);
+                            self.audio.play(SoundEffect::Blip);
+                            return;
+                        }
+                        KeyCode::Char('d') | KeyCode::Char('D') => {
+                            Self::run_notepad_action(&mut st, 5);
+                            self.audio.play(SoundEffect::Blip);
+                            return;
+                        }
+                        _ => {}
+                    }
                 }
                 match code {
                     KeyCode::Esc => {
@@ -368,15 +440,66 @@ impl App {
                         self.audio.play(SoundEffect::Click);
                         return;
                     }
-                    KeyCode::Char(c) => {
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        st.notepad.focus_sidebar = !st.notepad.focus_sidebar;
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Char('A') => {
+                        Self::spawn_ai_sitrep(&self.state, &mut st, false);
+                        self.audio.play(SoundEffect::Blip);
+                        return;
+                    }
+                    KeyCode::Delete if st.notepad.focus_sidebar => {
+                        Self::run_notepad_action(&mut st, 5);
+                        self.audio.play(SoundEffect::Blip);
+                        return;
+                    }
+                    KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End => {
+                        if st.notepad.focus_sidebar {
+                            let max = st.notepad.files.len().saturating_sub(1) as isize;
+                            let delta: isize = match code {
+                                KeyCode::Up => -1,
+                                KeyCode::Down => 1,
+                                KeyCode::PageUp => -8,
+                                KeyCode::PageDown => 8,
+                                KeyCode::Home => isize::MIN / 2,
+                                _ => isize::MAX / 2,
+                            };
+                            let next = (st.notepad.selected_file_idx as isize)
+                                .saturating_add(delta)
+                                .clamp(0, max) as usize;
+                            st.select_notepad_file(next);
+                        } else {
+                            let step: u16 = match code {
+                                KeyCode::Up | KeyCode::Down => 1,
+                                _ => 10,
+                            };
+                            match code {
+                                KeyCode::Up | KeyCode::PageUp => st.notepad.scroll = st.notepad.scroll.saturating_sub(step),
+                                KeyCode::Home => st.notepad.scroll = 0,
+                                KeyCode::End => st.notepad.scroll = st.notepad.content.lines().count().min(u16::MAX as usize) as u16,
+                                _ => st.notepad.scroll = st.notepad.scroll.saturating_add(step),
+                            }
+                        }
+                        return;
+                    }
+                    KeyCode::Enter if st.notepad.focus_sidebar => {
+                        let idx = st.notepad.selected_file_idx;
+                        st.select_notepad_file(idx);
+                        st.notepad.focus_sidebar = false;
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Char(c) if !st.notepad.focus_sidebar && !st.notepad.active_file.ends_with(".html") => {
                         st.notepad.content.push(c);
                         return;
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Enter if !st.notepad.focus_sidebar && !st.notepad.active_file.ends_with(".html") => {
                         st.notepad.content.push('\n');
                         return;
                     }
-                    KeyCode::Backspace => {
+                    KeyCode::Backspace if !st.notepad.focus_sidebar && !st.notepad.active_file.ends_with(".html") => {
                         st.notepad.content.pop();
                         return;
                     }
@@ -872,11 +995,11 @@ impl App {
                 self.audio.play(SoundEffect::Blip);
             }
             KeyCode::Char('A') => {
-                Self::spawn_ai_sitrep(&self.state, &mut st);
+                Self::spawn_ai_sitrep(&self.state, &mut st, false);
                 self.audio.play(SoundEffect::Blip);
             }
             KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
-                Self::spawn_ai_sitrep(&self.state, &mut st);
+                Self::spawn_ai_sitrep(&self.state, &mut st, false);
                 self.audio.play(SoundEffect::Blip);
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -1036,7 +1159,49 @@ impl App {
                             self.audio.play(SoundEffect::Blip);
                         }
                         HitTarget::DialogClose => {
+                            st.ai_prompt_input_active = false;
                             st.close_dialog();
+                        }
+                        HitTarget::DialogSaveFile => {
+                            if let Some(path) = st.save_dialog_to_markdown() {
+                                st.dialog_content.push(format!("[*] DOSYAYA KAYDEDILDI: {}", path));
+                            }
+                            self.audio.play(SoundEffect::Blip);
+                        }
+                        HitTarget::DialogExportHtml => {
+                            if let Some(path) = st.export_html_briefing_deck() {
+                                st.dialog_content.push(format!("[*] HTML BRIFING KAYDEDILDI: {}", path));
+                            }
+                            self.audio.play(SoundEffect::Blip);
+                        }
+                        HitTarget::DialogExportNote => {
+                            Self::append_dialog_to_notepad(&mut st);
+                            self.audio.play(SoundEffect::Blip);
+                        }
+                        HitTarget::AiMode(mid) => {
+                            if mid == 3 {
+                                st.ai_mode = 3;
+                                st.ai_prompt_input_active = true;
+                                self.audio.play(SoundEffect::Click);
+                            } else {
+                                st.ai_mode = mid;
+                                st.ai_prompt_input_active = false;
+                                Self::spawn_ai_sitrep(&self.state, &mut st, true);
+                                self.audio.play(SoundEffect::Blip);
+                            }
+                        }
+                        HitTarget::AiRefresh => {
+                            Self::spawn_ai_sitrep(&self.state, &mut st, true);
+                            self.audio.play(SoundEffect::Blip);
+                        }
+                        HitTarget::NotepadFile(idx) => {
+                            st.select_notepad_file(idx);
+                            st.notepad.focus_sidebar = true;
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::NotepadAction(act) => {
+                            Self::run_notepad_action(&mut st, act);
+                            self.audio.play(SoundEffect::Blip);
                         }
                         HitTarget::AirFilter(idx) => {
                             Self::apply_air_filter(&mut st, idx);
@@ -1161,7 +1326,7 @@ impl App {
                             self.audio.play(SoundEffect::Blip);
                         }
                         HitTarget::TriggerAiAnalysis => {
-                            Self::spawn_ai_sitrep(&self.state, &mut st);
+                            Self::spawn_ai_sitrep(&self.state, &mut st, false);
                             self.audio.play(SoundEffect::Blip);
                         }
                         HitTarget::MapTarget(tile_idx, row_idx) => {
@@ -1338,6 +1503,8 @@ impl App {
                     st.sat_scroll = st.sat_scroll.saturating_sub(2);
                 } else if st.active_view == ActiveView::Cyberint {
                     st.cyber_scroll = st.cyber_scroll.saturating_sub(2);
+                } else if st.active_view == ActiveView::Notepad {
+                    st.notepad.scroll = st.notepad.scroll.saturating_sub(2);
                 } else if st.active_view == ActiveView::Geoint || st.active_tile == 0 || st.zoomed_tile == Some(0) {
                     st.map_zoom = (st.map_zoom * 1.25).min(50.0);
                 } else {
@@ -1375,6 +1542,8 @@ impl App {
                     st.sat_scroll = st.sat_scroll.saturating_add(2);
                 } else if st.active_view == ActiveView::Cyberint {
                     st.cyber_scroll = st.cyber_scroll.saturating_add(2);
+                } else if st.active_view == ActiveView::Notepad {
+                    st.notepad.scroll = st.notepad.scroll.saturating_add(2);
                 } else if st.active_view == ActiveView::Geoint || st.active_tile == 0 || st.zoomed_tile == Some(0) {
                     st.map_zoom = (st.map_zoom / 1.25).max(0.25);
                 } else {
@@ -1456,7 +1625,69 @@ impl App {
         }
     }
 
-    fn spawn_ai_sitrep(state_arc: &Arc<RwLock<AppState>>, st: &mut AppState) {
+    fn append_dialog_to_notepad(st: &mut AppState) {
+        let stamp = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+        let exported = format!(
+            "\n--- [{}] {} ---\n{}\n",
+            stamp,
+            st.dialog_title,
+            st.dialog_content.join("\n")
+        );
+        let prev_active = st.notepad.active_file.clone();
+        st.notepad.active_file = "notes.txt".to_string();
+        let mut base = std::fs::read_to_string("notes.txt").unwrap_or_else(|_| st.notepad.content.clone());
+        base.push_str(&exported);
+        st.notepad.content = base;
+        st.save_notepad();
+        if prev_active != "notes.txt" {
+            if let Ok(orig) = std::fs::read_to_string(&prev_active) {
+                st.notepad.active_file = prev_active;
+                st.notepad.content = orig;
+            }
+        }
+        st.dialog_content
+            .push("[*] RAPOR notes.txt DOSYASINA AKTARILDI".to_string());
+    }
+
+    fn run_notepad_action(st: &mut AppState, act: usize) {
+        match act {
+            0 => st.save_notepad(),
+            1 => {
+                let stamp = format!("\n[{}] ", Utc::now().format("%H:%M %d/%m/%Y UTC"));
+                st.notepad.content.push_str(&stamp);
+            }
+            2 => {
+                if let Some(t) = st.inspected_target() {
+                    let line = format!(
+                        "\n- [{}] {} ({}) @ {:.3}N, {:.3}E | Hiz:{:.0}kt | {}\n",
+                        Utc::now().format("%H:%M UTC"),
+                        t.callsign,
+                        t.id,
+                        t.geo.lat,
+                        t.geo.lon,
+                        t.speed_kts.unwrap_or(0.0),
+                        t.info
+                    );
+                    st.notepad.content.push_str(&line);
+                    st.notepad.status_message = format!("Hedef eklendi: {}", t.callsign);
+                } else {
+                    st.notepad.status_message = "Eklenecek secili hedef bulunmuyor".to_string();
+                }
+            }
+            3 => {
+                let _ = st.create_new_notepad_file();
+            }
+            4 => {
+                let _ = st.export_html_briefing_deck();
+            }
+            5 => {
+                let _ = st.delete_selected_notepad_file();
+            }
+            _ => {}
+        }
+    }
+
+    fn spawn_ai_sitrep(state_arc: &Arc<RwLock<AppState>>, st: &mut AppState, force_refresh: bool) {
         if st.ai_analysis_running {
             return;
         }
@@ -1482,8 +1713,23 @@ impl App {
             return;
         };
 
+        if !force_refresh {
+            if let Some((ts, rep)) = &st.ai_last_report {
+                let mut lines: Vec<String> = rep.lines().map(|l| l.to_string()).collect();
+                lines.push(format!(
+                    "[*] Onbellek raporu ({} UTC) — Yenilemek icin [R] veya mod icin [1-4] secin.",
+                    ts.format("%H:%M")
+                ));
+                st.open_dialog(
+                    format!("GEMINI AI ANALIZ RAPORU ({} UTC)", ts.format("%H:%M")),
+                    lines,
+                );
+                return;
+            }
+        }
+
         let model_opt = st.config.api_keys.gemini_model.clone();
-        let prompt = argus_ingest::gemini_intel::build_tactical_prompt(st);
+        let prompt = argus_ingest::gemini_intel::build_mode_prompt(st, st.ai_mode, &st.ai_custom_prompt);
         st.ai_analysis_running = true;
         st.live_status = "GEMINI AI DURUM RAPORU OLUSTURULUYOR...".to_string();
 
@@ -1500,13 +1746,15 @@ impl App {
             match res {
                 Ok(report) => {
                     let now = Utc::now();
+                    let title = format!("GEMINI AI ANALIZ RAPORU ({} UTC)", now.format("%H:%M"));
+                    let saved_path = lock.auto_save_ai_report_markdown(&title, &report);
                     lock.ai_last_report = Some((now, report.clone()));
                     lock.live_status = "GEMINI AI SITREP HAZIR".to_string();
-                    let lines: Vec<String> = report.lines().map(|l| l.to_string()).collect();
-                    lock.open_dialog(
-                        format!("GEMINI AI ANALIZ RAPORU ({} UTC)", now.format("%H:%M")),
-                        lines,
-                    );
+                    let mut lines: Vec<String> = report.lines().map(|l| l.to_string()).collect();
+                    if let Some(p) = saved_path {
+                        lines.push(format!("[*] Otomatik arsivlendi: {}", p));
+                    }
+                    lock.open_dialog(title, lines);
                 }
                 Err(e) => {
                     lock.live_status = "GEMINI AI HATA".to_string();
@@ -2078,14 +2326,19 @@ impl App {
                 "> [F7] SIBER     : Shodan InternetDB Host Tarayici, CISA KEV & IODA".to_string(),
                 "> [F8] UYDU      : CelesTrak GP SGP4 Uydu Polar Radar Skobu & Gecisler".to_string(),
                 "> [F9] AFET      : USGS/Kandilli Deprem, NASA FIRMS Termal & Safecast".to_string(),
-                "> [F10/F11]      : Taktik Not Defteri (notes.txt) / Hesap Makinesi".to_string(),
+                "> [F10/F11]      : Notlar & AI Rapor Arsivi (Tab/Ok/Ctrl+N/Ctrl+S) / Hesap".to_string(),
                 "--- 2. SAG DENETCI PANELI VE HARITA KONTROLLERI ---".to_string(),
                 "> [Tek Tik]      : Tablo veya haritadaki hedefi Sag Denetci Panelinde inceler".to_string(),
                 "> [Cift Tik/Ent] : Hedefin tam ekran dosyasini acar".to_string(),
                 "> [I] Tusu       : Sag Kalici Denetci Panelini goster/gizle".to_string(),
                 "> [W] veya [WEB] : http://127.0.0.1:8090 uzerinde canli Leaflet haritasini acar".to_string(),
                 "> [G / F / B]    : Haritada Odakla (G) | Takip Kilidi (F) | Izleme Listesi (B)".to_string(),
-                "--- 3. GERCEK KIWISDR KISA DALGA RADYO KONTROLLERI ---".to_string(),
+                "> [ :Ntm]        : NOTAM / SIGMET / GPS-JAM Hava Sahasi Cokgen Katmani".to_string(),
+                "--- 3. GEMINI AI ANALIZ & DOSYA KAYIT KISAYOLLARI ---".to_string(),
+                "> [Shift+A/Ctrl+A]: AI SITREP ac (1:Kuresel 2:Hedef 3:Bolge 4:Ozel Soru R:Yenile)".to_string(),
+                "> [K / Ctrl+S]   : Acik AI raporunu/dosyasini dogrudan reports/*.md kaydet".to_string(),
+                "> [H] / [E]      : HTML Brifing Paketi olustur (H) | notes.txt icine ekle (E)".to_string(),
+                "--- 4. GERCEK KIWISDR KISA DALGA RADYO KONTROLLERI ---".to_string(),
                 "> [S] veya Tikla : SIGINT ekraninda canli KiwiSDR WebSocket ses akisini baslat/durdur".to_string(),
                 "> [1-7] Tuslari  : Frekans sec (11175 USB, 8992 USB, 4625 UVB-76, 5448 Pip)".to_string(),
                 "> [N] veya Tikla : Aktif 0-30 MHz KiwiSDR anten sunucusunu degistir".to_string(),

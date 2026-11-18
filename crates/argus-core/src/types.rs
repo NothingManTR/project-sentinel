@@ -348,12 +348,17 @@ pub struct RadioPreset {
     pub stream_url: Option<String>,
 }
 
-/// Win98 Not Defteri Durumu
+/// Win98 Not Defteri & Rapor Arşivi Durumu
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotepadState {
     pub content: String,
     pub cursor_line: usize,
     pub cursor_col: usize,
+    pub scroll: u16,
+    pub active_file: String,
+    pub files: Vec<String>,
+    pub selected_file_idx: usize,
+    pub focus_sidebar: bool,
     pub status_message: String,
 }
 
@@ -363,6 +368,11 @@ impl Default for NotepadState {
             content: String::new(),
             cursor_line: 0,
             cursor_col: 0,
+            scroll: 0,
+            active_file: "notes.txt".to_string(),
+            files: vec!["notes.txt".to_string()],
+            selected_file_idx: 0,
+            focus_sidebar: false,
             status_message: "Hazır".to_string(),
         }
     }
@@ -483,5 +493,19 @@ pub struct FusionCluster {
     pub lon: f64,
     pub score: u32,
     pub domains: Vec<String>,
+    pub summary: String,
+}
+
+/// N-4: Canlı NOTAM / Çatışma Hava Sahası / Uluslararası SIGMET / GPS Jamming Çokgeni
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AirspaceWarning {
+    pub id: String,
+    pub fir_or_zone: String,
+    pub kind: String,     // "SIGMET", "NOTAM-CONFLICT", "GPS-JAM"
+    pub hazard: String,
+    pub top_fl: Option<u32>,
+    pub polygon: Vec<(f64, f64)>, // (lon, lat)
+    pub center_lat: f64,
+    pub center_lon: f64,
     pub summary: String,
 }

@@ -372,9 +372,10 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 ("Fire", 3),
                 ("Geo", 4),
                 ("SDR", 7),
-                ("Kablo", 8),
-                ("Meteo", 9),
+                ("Kbl", 8),
+                ("Met", 9),
                 ("Fuz", 10),
+                ("Ntm", 11),
             ];
             for (lname, lbit) in layers {
                 let on = (state.geoint_layers & (1 << lbit)) != 0;
@@ -384,7 +385,7 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
                     format!("[ :{}]", lname)
                 };
                 let tw = tag.chars().count() as u16;
-                if cx + tw + 11 < rows[2].x + rows[2].width {
+                if cx + tw + 9 <= rows[2].x + rows[2].width {
                     r2.push(Span::styled(
                         tag,
                         Style::default().fg(if on { TELETEXT_GREEN } else { FG_MUTED }),
@@ -507,7 +508,8 @@ fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
         ActiveView::Satint => " [Ok] Uydu Sec │ [Enter] SGP4 Dosyasi │ [F2] Yer Izi Haritada ",
         ActiveView::Masint => " [1-3] Sismik / Termal / Uzay & CBRN │ [Ok/Enter] Detay ",
         ActiveView::Cyberint => " [1-3] Shodan IP │ [Ok/Enter] CVE/IODA Detay ",
-        _ => " [F1-F11] Sekme │ [A] Gemini AI Analiz │ [Ctrl+E] Rapor │ [Q] Cikis ",
+        ActiveView::Notepad => " [Tab] Arsiv/Editor │ [Ctrl+S] Kaydet │ [Ctrl+N] Yeni │ [Ctrl+H] HTML │ [F5] Zaman ",
+        _ => " [F1-F11] Sekme │ [Shift+A] AI SITREP │ [Ctrl+E] Rapor │ [Q] Cikis ",
     };
 
     let help_lbl = " [?:Yardim] ";

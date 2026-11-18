@@ -493,6 +493,13 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         })
         .collect();
 
+    let notam_list: Vec<String> = state
+        .airspace_warnings
+        .iter()
+        .take(10)
+        .map(|w| format!("[{}] {}: {}", w.kind, w.fir_or_zone, w.hazard))
+        .collect();
+
     format!(
         "Sen Project Sentinel (ARGUS C4ISR) kidemli jeopolitik, savunma ve stratejik istihbarat bas analistisin (`Senior Strategic Intelligence Analyst`).\n\
         Gorevin YALNIZCA anlik sensor sayilarini listelemek degil; asagida sistemdeki TUM aktif sensor ve istihbarat disiplinlerinden gelen CANLI telemetriyi, GENEL JEOPOLITIK BAGLAM, askeri doktrin, kritik deniz/hava gecitleri (Bogazlar, Kizildeniz, Hurmuz, Tayvan, Baltik, Karadeniz, Levant) ve tarihsel tirmanma kaliplariyla BIRLESTIREREK gelecege yonelik olasi savas/silahli catisma riski tasiyan noktalari (`Flashpoints`) ayrintili, somut ve ongoru odakli sekilde analiz etmektir.\n\n\
@@ -526,8 +533,9 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         === 4. SEAINT (AIS) ===\n\
         Toplam Gemi: {} | Harp/Sahil Guv: {}\n\
         Oncelikli/Yakin Gemiler: {}\n\n\
-        === 5. GEOINT / KABLO / GPS-JAM / ANOMALI / FUZYON ===\n\
+        === 5. GEOINT / KABLO / GPS-JAM / NOTAM / FUZYON ===\n\
         K-1 Denizalti Kablo Sayisi: {}\n\
+        N-4 Hava Sahasi / NOTAM / SIGMET ({}): {}\n\
         GPS Jamming Bolgeleri ({}): {}\n\
         Parkur Anomalileri ({}): {}\n\
         K-4 Coklu-Sensor Fuzyon Kumeleri ({}): {}\n\n\
@@ -572,6 +580,8 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         mil_sea,
         if top_sea.is_empty() { "Yok".to_string() } else { top_sea.join(" | ") },
         state.subsea_cables.len(),
+        state.airspace_warnings.len(),
+        if notam_list.is_empty() { "Yok".to_string() } else { notam_list.join(" | ") },
         state.gps_jamming_zones.len(),
         if jam_zones.is_empty() { "Yok".to_string() } else { jam_zones.join(" | ") },
         state.track_anomalies.len(),
@@ -605,6 +615,118 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         state.news.len(),
         if top_news.is_empty() { "Yok".to_string() } else { top_news.join(" | ") },
     )
+}
+
+/// Seçilen analiz moduna (`0=Küresel Flashpoint`, `1=Seçili Hedef`, `2=Bölgesel Kriz`, `3=Özel Soru`)
+/// göre özelleştirilmiş kapsamlı Gemini istemi oluşturur.
+pub fn build_mode_prompt(state: &AppState, mode: usize, custom_question: &str) -> String {
+    let base = build_tactical_prompt(state);
+    match mode {
+        1 => {
+            let focus = if let Some(sel_id) = &state.selected_target_id {
+                if let Some(t) = state
+                    .air_targets
+                    .iter()
+                    .chain(state.sea_targets.iter())
+                    .find(|x| &x.id == sel_id)
+                {
+                    let nearby_warns: Vec<String> = state
+                        .airspace_warnings
+                        .iter()
+                        .filter(|w| {
+                            haversine_km(t.geo.lat, t.geo.lon, w.center_lat, w.center_lon) <= 900.0
+                        })
+                        .take(5)
+                        .map(|w| format!("[{}] {}: {}", w.kind, w.fir_or_zone, w.hazard))
+                        .collect();
+                    let nearby_conf: Vec<String> = state
+                        .acled_events
+                        .iter()
+                        .filter(|c| haversine_km(t.geo.lat, t.geo.lon, c.lat, c.lon) <= 900.0)
+                        .take(5)
+                        .map(|c| format!("{} [{}] {}", c.event_date, c.event_type, c.location))
+                        .collect();
+                    format!(
+                        "HEDEF ODAK: {} ({}) | Tip: {} | Operator: {} | {:.4}N,{:.4}E | Hiz:{:.0}kt | Irtifa:{:.0}m | Rota:{:.0}deg\n\
+                        Yakin NOTAM/SIGMET/JAM: {}\n\
+                        Yakin Catisma Olaylari: {}",
+                        t.callsign,
+                        t.id,
+                        t.airframe_or_vessel_class.as_deref().or(t.vessel_type.as_deref()).unwrap_or("-"),
+                        t.operator_branch.as_deref().or(t.operator_country.as_deref()).unwrap_or("-"),
+                        t.geo.lat,
+                        t.geo.lon,
+                        t.speed_kts.unwrap_or(0.0),
+                        t.geo.alt_m.unwrap_or(0.0),
+                        t.heading_deg.unwrap_or(0.0),
+                        if nearby_warns.is_empty() { "Yok".to_string() } else { nearby_warns.join(" | ") },
+                        if nearby_conf.is_empty() { "Yok".to_string() } else { nearby_conf.join(" | ") },
+                    )
+                } else {
+                    format!("Secili Hedef ID: {}", sel_id)
+                }
+            } else {
+                "Harita veya tabloda secili hedef bulunmuyor; istasyona en yakin askeri/kritik hedefleri analiz et.".to_string()
+            };
+            format!(
+                "[MOD 2: SECILI HEDEF DERIN ANALIZI]\n\
+                Asagidaki odak hedefe ozel olarak Turkce analiz uret:\n\
+                1. PLATFORM & DOKTRIN PROFILI (gorev tipi, kapasitesi, bagli oldugu kuvvet)\n\
+                2. ROTA, KONUM & HAREKET NIYETI ANALIZI (olasi gorev, tanker/ISR/devriye senaryosu)\n\
+                3. CEVRESEL TEHDIT & HAVA SAHASI RISKLERI (yakin NOTAM/GPS-JAM/catisma korelasyonu)\n\
+                4. TAKIP & ERKEN UYARI KRITERLERI\n\n{}\n\n{}",
+                focus, base
+            )
+        }
+        2 => {
+            let radius_km = 1500.0;
+            let clat = state.map_center_lat;
+            let clon = state.map_center_lon;
+            let reg_mil = state
+                .air_targets
+                .iter()
+                .filter(|t| t.is_military && haversine_km(clat, clon, t.geo.lat, t.geo.lon) <= radius_km)
+                .count();
+            let reg_sea = state
+                .sea_targets
+                .iter()
+                .filter(|t| haversine_km(clat, clon, t.geo.lat, t.geo.lon) <= radius_km)
+                .count();
+            let reg_warns: Vec<String> = state
+                .airspace_warnings
+                .iter()
+                .filter(|w| haversine_km(clat, clon, w.center_lat, w.center_lon) <= radius_km)
+                .take(8)
+                .map(|w| format!("[{}] {} - {}", w.kind, w.fir_or_zone, w.hazard))
+                .collect();
+            format!(
+                "[MOD 3: BOLGESEL KRIZ & HAREKAT ANALIZI]\n\
+                Analiz Merkez Sahasi: {:.2}N, {:.2}E (Yaricap: 1500 km) | Askeri Ucus: {} | Deniz Unsuru: {}\n\
+                Saha NOTAM/SIGMET/GPS-JAM: {}\n\
+                Yalnizca bu bolgesel harekat sahasina (ve komsu gecitlere) derinleserek Turkce olarak: kuvvet yogunlasmasi, olasi catisma/operasyon senaryolari (24-72s & 1-4 hafta), kritik altyapi/kablo/GPS etkileri ve izleme noktalarini raporla.\n\n{}",
+                clat,
+                clon,
+                reg_mil,
+                reg_sea,
+                if reg_warns.is_empty() { "Yok".to_string() } else { reg_warns.join(" | ") },
+                base
+            )
+        }
+        3 => {
+            let q = if custom_question.trim().is_empty() {
+                "Mevcut verilere gore en acil savas/catisma riski nerededir?"
+            } else {
+                custom_question.trim()
+            };
+            format!(
+                "[MOD 4: OZEL ISTIHBARAT SORUSU]\n\
+                KULLANICI SORUSU: \"{}\"\n\n\
+                Asagidaki canli coklu-sensor telemetrisini ve genel jeopolitik/askeri bilgini kullanarak yukaridaki soruyu ayrintili, somut verilere dayali ve madde madde Turkce olarak yanitla. Sensor verisinde olmayan seyi uydurma.\n\n{}",
+                q, base
+            )
+        }
+        _ => base,
+    }
 }
 
 /// Gemini Interactions API yanıtından düz metni ayıklar (`steps` ve `outputs` uyumlu)
@@ -690,10 +812,10 @@ pub async fn generate_ai_sitrep(
             "model": model,
             "input": prompt,
         });
-        let req_timeout = if idx == 0 && candidates.len() > 1 {
-            Duration::from_secs(12)
-        } else {
-            Duration::from_secs(50)
+        let req_timeout = match idx {
+            0 if candidates.len() > 1 => Duration::from_secs(8),
+            1 => Duration::from_secs(22),
+            _ => Duration::from_secs(35),
         };
 
         let resp = match client
@@ -810,5 +932,31 @@ mod tests {
         ] {
             assert!(prompt.contains(required), "missing section: {}", required);
         }
+    }
+
+    #[test]
+    fn test_build_mode_prompts() {
+        let mut st = AppState::new(Default::default());
+        st.airspace_warnings.push(argus_core::types::AirspaceWarning {
+            id: "NOTAM-TEST".to_string(),
+            fir_or_zone: "LLLL".to_string(),
+            kind: "NOTAM-CONFLICT".to_string(),
+            hazard: "GNSS BOZUNMA".to_string(),
+            top_fl: Some(600),
+            polygon: vec![(34.0, 31.0), (36.0, 31.0), (35.0, 33.0), (34.0, 31.0)],
+            center_lat: 31.6,
+            center_lon: 35.0,
+            summary: "Test sahasi".to_string(),
+        });
+
+        let m0 = build_mode_prompt(&st, 0, "");
+        assert!(m0.contains("N-4 Hava Sahasi / NOTAM / SIGMET (1)"));
+        let m1 = build_mode_prompt(&st, 1, "");
+        assert!(m1.contains("[MOD 2: SECILI HEDEF DERIN ANALIZI]"));
+        let m2 = build_mode_prompt(&st, 2, "");
+        assert!(m2.contains("[MOD 3: BOLGESEL KRIZ & HAREKAT ANALIZI]"));
+        let m3 = build_mode_prompt(&st, 3, "Hurmuz Bogazi kapatilirsa ne olur?");
+        assert!(m3.contains("[MOD 4: OZEL ISTIHBARAT SORUSU]"));
+        assert!(m3.contains("Hurmuz Bogazi kapatilirsa ne olur?"));
     }
 }

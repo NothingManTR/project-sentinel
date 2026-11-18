@@ -1,5 +1,6 @@
 pub mod acled;
 pub mod aircraft_photo;
+pub mod airspace_warnings;
 pub mod aisstream;
 pub mod celestrak;
 pub mod cisa_kev;
@@ -373,6 +374,28 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                     argus_core::fusion::recompute_fusion_and_anomalies(&mut lock);
                 }
                 sleep(Duration::from_secs(8)).await;
+            }
+        });
+    }
+
+    // 16. N-4: Canlı International SIGMET, Çatışma NOTAM Sahaları ve GPS-JAM Çokgenleri
+    {
+        let st = Arc::clone(&state);
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+                .timeout(Duration::from_secs(10))
+                .user_agent("Project-Sentinel/0.1")
+                .build()
+                .unwrap_or_default();
+            loop {
+                let jam_snapshot = st.read().gps_jamming_zones.clone();
+                let warnings = airspace_warnings::fetch_airspace_warnings(&client, &jam_snapshot).await;
+                if !warnings.is_empty() {
+                    let mut lock = st.write();
+                    lock.airspace_warnings = warnings;
+                }
+                sleep(Duration::from_secs(120)).await;
             }
         });
     }

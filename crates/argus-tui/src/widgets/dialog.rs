@@ -98,12 +98,92 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
         .style(Style::default().bg(BG_PRIMARY));
     frame.render_widget(content_block, content_area);
 
-    let text_area = Rect {
-        x: content_area.x + 1,
-        y: content_area.y + 1,
-        width: content_area.width.saturating_sub(2),
-        height: content_area.height.saturating_sub(2),
+    let is_ai_dialog = state.dialog_title.contains("GEMINI AI");
+    let top_reserve = if is_ai_dialog {
+        if state.ai_prompt_input_active { 2 } else { 1 }
+    } else {
+        0
     };
+
+    let mut text_area = Rect {
+        x: content_area.x + 1,
+        y: content_area.y + 1 + top_reserve,
+        width: content_area.width.saturating_sub(2),
+        height: content_area.height.saturating_sub(2 + top_reserve),
+    };
+
+    if is_ai_dialog && content_area.height > 4 {
+        let mode_row = Rect {
+            x: content_area.x + 1,
+            y: content_area.y + 1,
+            width: content_area.width.saturating_sub(2),
+            height: 1,
+        };
+        let modes = [
+            ("[1:Kuresel Flashpoint]", 0usize),
+            ("[2:Secili Hedef]", 1),
+            ("[3:Bolgesel Kriz]", 2),
+            ("[4:Ozel Soru]", 3),
+        ];
+        let mut mx = mode_row.x;
+        let mut spans = Vec::new();
+        for (lbl, mid) in modes {
+            let w = lbl.chars().count() as u16;
+            if mx + w + 1 < mode_row.x + mode_row.width.saturating_sub(11) {
+                let active = state.ai_mode == mid;
+                spans.push(Span::styled(
+                    lbl,
+                    Style::default()
+                        .fg(if active { TELETEXT_BLACK } else { TELETEXT_CYAN })
+                        .bg(if active { TELETEXT_CYAN } else { BG_SURFACE })
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::raw(" "));
+                state.hit_tester.register(
+                    Rect { x: mx, y: mode_row.y, width: w, height: 1 },
+                    HitTarget::AiMode(mid),
+                );
+                mx += w + 1;
+            }
+        }
+        let ref_lbl = "[R:Yenile]";
+        let rw = ref_lbl.chars().count() as u16;
+        if mx + rw <= mode_row.x + mode_row.width {
+            spans.push(Span::styled(
+                ref_lbl,
+                Style::default()
+                    .fg(TELETEXT_BLACK)
+                    .bg(TELETEXT_YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            state.hit_tester.register(
+                Rect { x: mx, y: mode_row.y, width: rw, height: 1 },
+                HitTarget::AiRefresh,
+            );
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), mode_row);
+
+        if state.ai_prompt_input_active {
+            let prompt_row = Rect {
+                x: content_area.x + 1,
+                y: content_area.y + 2,
+                width: content_area.width.saturating_sub(2),
+                height: 1,
+            };
+            let q_line = format!(" SORU (Enter=Gonder, Esc=Iptal): {}_", state.ai_custom_prompt);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    q_line,
+                    Style::default()
+                        .fg(TELETEXT_BLACK)
+                        .bg(TELETEXT_YELLOW)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                prompt_row,
+            );
+        }
+        text_area.y = content_area.y + 1 + top_reserve;
+    }
 
     let mut lines: Vec<Line> = state
         .dialog_content
@@ -248,18 +328,25 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
         frame.render_widget(text_p, text_area);
     }
 
-    let btn_width = 41.min(dialog_area.width.saturating_sub(4));
-    let btn_area = Rect {
-        x: dialog_area.x + (dialog_area.width.saturating_sub(btn_width)) / 2,
-        y: dialog_area.y + dialog_area.height.saturating_sub(2),
-        width: btn_width,
-        height: 1,
-    };
-
-    let btn = Paragraph::new(Span::styled(
-        " [ E: Not Defterine Aktar | Esc: Kapat ] ",
-        Style::default().fg(TELETEXT_BLACK).bg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
-    ));
-    frame.render_widget(btn, btn_area);
-    state.hit_tester.register(btn_area, HitTarget::DialogClose);
+    let btns = [
+        (" [K: .md Kaydet] ", HitTarget::DialogSaveFile, TELETEXT_BLACK, TELETEXT_GREEN),
+        (" [H: HTML Brifing] ", HitTarget::DialogExportHtml, TELETEXT_BLACK, TELETEXT_CYAN),
+        (" [E: Notlara Ekle] ", HitTarget::DialogExportNote, TELETEXT_BLACK, TELETEXT_YELLOW),
+        (" [Esc: Kapat] ", HitTarget::DialogClose, FG_PRIMARY, BG_SURFACE),
+    ];
+    let total_btn_w: u16 = btns.iter().map(|b| b.0.chars().count() as u16 + 1).sum();
+    let mut bx = dialog_area.x + dialog_area.width.saturating_sub(total_btn_w) / 2;
+    let by = dialog_area.y + dialog_area.height.saturating_sub(2);
+    for (lbl, target, fg, bg) in btns {
+        let w = lbl.chars().count() as u16;
+        if bx + w <= dialog_area.x + dialog_area.width.saturating_sub(2) {
+            let rect = Rect { x: bx, y: by, width: w, height: 1 };
+            frame.render_widget(
+                Paragraph::new(Span::styled(lbl, Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD))),
+                rect,
+            );
+            state.hit_tester.register(rect, target);
+            bx += w + 1;
+        }
+    }
 }

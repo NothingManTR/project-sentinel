@@ -988,6 +988,45 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
     }
 
+    // N-4: Canlı NOTAM / SIGMET / Çatışma Hava Sahası / GPS-JAM Çokgenleri (Opsiyonel Bit 11)
+    if state.geoint_layers & (1 << 11) != 0 {
+        for aw in &state.airspace_warnings {
+            let col = match aw.kind.as_str() {
+                "NOTAM-CONFLICT" => TELETEXT_RED,
+                "GPS-JAM" => TELETEXT_MAGENTA,
+                _ => TELETEXT_YELLOW,
+            };
+            for pair in aw.polygon.windows(2) {
+                let (lon1, lat1) = pair[0];
+                let (lon2, lat2) = pair[1];
+                if (lon1 - lon2).abs() > 180.0 {
+                    continue;
+                }
+                let steps = 16;
+                for s in 0..=steps {
+                    let f = (s as f64) / (steps as f64);
+                    let plon = lon1 + (lon2 - lon1) * f;
+                    let plat = lat1 + (lat2 - lat1) * f;
+                    if let Some((sx, sy)) = to_screen(plon, plat) {
+                        let buf = frame.buffer_mut();
+                        let sym = if s == 0 { "+" } else { ":" };
+                        if buf[(sx, sy)].symbol() == " " || s == 0 {
+                            put_overlay_str(buf, area, sx, sy, sym, col, None, true);
+                        }
+                    }
+                }
+            }
+            if let Some((cx, cy)) = to_screen(aw.center_lon, aw.center_lat) {
+                let tag = match aw.kind.as_str() {
+                    "NOTAM-CONFLICT" => "[!NTM]",
+                    "GPS-JAM" => "[!JAM]",
+                    _ => "[!SIG]",
+                };
+                put_overlay_str(frame.buffer_mut(), area, cx, cy, tag, col, Some(BG_PRIMARY), true);
+            }
+        }
+    }
+
     // K-4: Çoklu-Sensör Füzyon Kriz Kümeleri (Bit 10)
     if state.geoint_layers & 1024 != 0 {
         for fc in &state.fusion_clusters {

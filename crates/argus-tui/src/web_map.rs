@@ -36,6 +36,7 @@ const WEB_MAP_HTML: &str = r#"<!DOCTYPE html>
   <label><input type="checkbox" id="chkSat" checked/> Uydu</label>
   <label><input type="checkbox" id="chkGeo" checked/> Deprem/Termal/CBRN</label>
   <label><input type="checkbox" id="chkCables"/> Denizalti Kablo</label>
+  <label><input type="checkbox" id="chkNotam"/> NOTAM/Hava Sahasi</label>
   <label><input type="checkbox" id="chkShapes"/> Platform Sekilleri</label>
 </div>
 <div id="map"></div>
@@ -139,7 +140,7 @@ document.getElementById('aor').onchange = function() {
   else if (v === 'ALL') map.setView([20, 15], 2);
   refresh();
 };
-['chkSea', 'chkSat', 'chkGeo', 'chkShapes'].forEach(id => document.getElementById(id).onchange = refresh);
+['chkSea', 'chkSat', 'chkGeo', 'chkNotam', 'chkShapes'].forEach(id => document.getElementById(id).onchange = refresh);
 document.getElementById('chkCables').onchange = async function() {
   if (!this.checked) { cableGroup.clearLayers(); cablesLoaded = false; return; }
   if (!cablesLoaded) {
@@ -245,6 +246,14 @@ async function refresh() {
       for (const w of d.weather) {
         L.circleMarker([w.lat, w.lon], { renderer: canvasRenderer, radius: 5, color: '#76a2c2', fillOpacity: 0.5 })
           .bindPopup(`<b>${w.name}</b>: ${w.temp.toFixed(1)}C | ${w.wind.toFixed(0)}kt | ${w.cond}`).addTo(layerGroup);
+      }
+    }
+    if (document.getElementById('chkNotam').checked && d.airspace_warnings) {
+      for (const aw of d.airspace_warnings) {
+        if (!aw.polygon || aw.polygon.length < 3) continue;
+        const col = aw.kind === 'NOTAM-CONFLICT' ? '#e06c58' : (aw.kind === 'GPS-JAM' ? '#b86088' : '#ccaa60');
+        L.polygon(aw.polygon.map(p => [p[1], p[0]]), { renderer: canvasRenderer, color: col, fillOpacity: 0.14, weight: 1.5, dashArray: '5,4' })
+          .bindPopup(`<b>[${aw.kind}] ${aw.fir}</b><br>${aw.hazard}<br>${aw.summary}`).addTo(layerGroup);
       }
     }
 
@@ -401,6 +410,21 @@ fn build_state_json(state: &Arc<RwLock<AppState>>) -> String {
         .map(|w| serde_json::json!({ "name": w.name, "lat": w.lat, "lon": w.lon, "temp": w.temp_c, "wind": w.wind_kts, "cond": w.condition }))
         .collect();
 
+    let airspace_warnings: Vec<serde_json::Value> = st
+        .airspace_warnings
+        .iter()
+        .map(|aw| {
+            serde_json::json!({
+                "id": aw.id,
+                "fir": aw.fir_or_zone,
+                "kind": aw.kind,
+                "hazard": aw.hazard,
+                "polygon": aw.polygon,
+                "summary": aw.summary,
+            })
+        })
+        .collect();
+
     serde_json::json!({
         "station_lat": st.station_lat,
         "station_lon": st.station_lon,
@@ -414,6 +438,7 @@ fn build_state_json(state: &Arc<RwLock<AppState>>) -> String {
         "jams": jams,
         "fusions": fusions,
         "weather": weather,
+        "airspace_warnings": airspace_warnings,
     })
     .to_string()
 }

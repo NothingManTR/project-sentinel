@@ -8,3 +8,4 @@ sentinel_report_*.md
 .~lock.*
 *.wav
 recordings/
+reports/

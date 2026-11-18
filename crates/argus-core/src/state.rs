@@ -143,8 +143,12 @@ pub struct AppState {
     pub inflight_schedule_keys: HashSet<String>,
     pub track_anomalies: HashMap<String, String>,
     pub fusion_clusters: Vec<FusionCluster>,
+    pub airspace_warnings: Vec<AirspaceWarning>,
     pub ai_analysis_running: bool,
     pub ai_last_report: Option<(chrono::DateTime<chrono::Utc>, String)>,
+    pub ai_mode: usize, // 0: Kuresel Flashpoint, 1: Secili Hedef, 2: Bolgesel Kriz, 3: Ozel Soru
+    pub ai_custom_prompt: String,
+    pub ai_prompt_input_active: bool,
     
     // Canlı Veri Akışları (Ring Buffers)
     pub targets: RingBuffer<TargetTrack>,
@@ -300,8 +304,12 @@ impl AppState {
             inflight_schedule_keys: HashSet::new(),
             track_anomalies: HashMap::new(),
             fusion_clusters: Vec::new(),
+            airspace_warnings: Vec::new(),
             ai_analysis_running: false,
             ai_last_report: None,
+            ai_mode: 0,
+            ai_custom_prompt: String::new(),
+            ai_prompt_input_active: false,
             targets: RingBuffer::new(30000),
             air_targets: RingBuffer::new(22000),
             sea_targets: RingBuffer::new(10000),
@@ -1048,22 +1056,353 @@ impl AppState {
     }
 
     pub fn load_notepad(&mut self) {
+        let _ = fs::create_dir_all("reports");
+        self.refresh_notepad_files();
+        self.notepad.active_file = "notes.txt".to_string();
+        self.notepad.selected_file_idx = 0;
+        self.notepad.scroll = 0;
         let note_path = Path::new("notes.txt");
         if note_path.exists() {
             if let Ok(content) = fs::read_to_string(note_path) {
                 self.notepad.content = content;
-                self.notepad.status_message = "notes.txt yüklendi".to_string();
+                self.notepad.status_message = "notes.txt yuklendi".to_string();
                 return;
             }
         }
-        self.notepad.content = "# PROJECT SENTINEL - Taktik Operasyon Not Defteri\n# [F5: Zaman Damgasi | Ctrl+S: Kaydet]\n".to_string();
+        self.notepad.content = "# PROJECT SENTINEL - Taktik Operasyon Not Defteri\n# [F5: Zaman Damgasi | Ctrl+S: Kaydet | Tab: Dosya Arsivi]\n".to_string();
+    }
+
+    /// `notes.txt` ve `reports/` altındaki kaydedilmiş AI SITREP / dosya / brifing dosyalarını tarar.
+    pub fn refresh_notepad_files(&mut self) {
+        let mut files = vec!["notes.txt".to_string()];
+        let rep_dir = Path::new("reports");
+        if rep_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(rep_dir) {
+                let mut report_paths: Vec<String> = entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let p = e.path();
+                        if !p.is_file() {
+                            return None;
+                        }
+                        let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
+                        if matches!(ext, "md" | "txt" | "html") {
+                            Some(p.to_string_lossy().into_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                report_paths.sort();
+                report_paths.reverse(); // En yeni tarihli raporlar ustte
+                files.extend(report_paths);
+            }
+        }
+        self.notepad.files = files;
+        if let Some(pos) = self.notepad.files.iter().position(|f| f == &self.notepad.active_file) {
+            self.notepad.selected_file_idx = pos;
+        } else if self.notepad.selected_file_idx >= self.notepad.files.len() {
+            self.notepad.selected_file_idx = 0;
+        }
+    }
+
+    /// Sol arşiv listesinden seçilen dosyayı sağ düzenleyici/okuyucuya yükler.
+    pub fn select_notepad_file(&mut self, idx: usize) {
+        let Some(path) = self.notepad.files.get(idx).cloned() else {
+            return;
+        };
+        self.notepad.selected_file_idx = idx;
+        self.notepad.active_file = path.clone();
+        self.notepad.scroll = 0;
+        if let Ok(text) = fs::read_to_string(&path) {
+            self.notepad.content = text;
+            self.notepad.status_message = format!("Acildi: {}", path);
+        } else if path == "notes.txt" {
+            self.notepad.content = "# PROJECT SENTINEL - Taktik Operasyon Not Defteri\n".to_string();
+            self.notepad.status_message = "Yeni notes.txt hazirlandi".to_string();
+        } else {
+            self.notepad.status_message = format!("Okunamadi: {}", path);
+        }
+    }
+
+    /// `reports/` altında yeni tarihli bir not dosyası oluşturup düzenleyiciye açar.
+    pub fn create_new_notepad_file(&mut self) -> Option<String> {
+        let _ = fs::create_dir_all("reports");
+        let now = chrono::Utc::now();
+        let path = format!("reports/not_{}.md", now.format("%Y%m%d_%H%M%S"));
+        let header = format!(
+            "# TAKTIK ANALIST NOTU ({} UTC)\n\n",
+            now.format("%Y-%m-%d %H:%M")
+        );
+        if fs::write(&path, &header).is_ok() {
+            self.notepad.active_file = path.clone();
+            self.notepad.content = header;
+            self.notepad.scroll = 0;
+            self.notepad.focus_sidebar = false;
+            self.refresh_notepad_files();
+            self.notepad.status_message = format!("Yeni dosya olusturuldu: {}", path);
+            Some(path)
+        } else {
+            self.notepad.status_message = "Hata: Yeni not dosyasi olusturulamadi".to_string();
+            None
+        }
+    }
+
+    /// `reports/` içindeki seçili dosyayı siler (`notes.txt` korumalıdır).
+    pub fn delete_selected_notepad_file(&mut self) -> bool {
+        let Some(target) = self.notepad.files.get(self.notepad.selected_file_idx).cloned() else {
+            return false;
+        };
+        if target == "notes.txt" || !target.starts_with("reports/") {
+            self.notepad.status_message = "Ana notes.txt dosyasi silinemez".to_string();
+            return false;
+        }
+        if fs::remove_file(&target).is_ok() {
+            self.notepad.status_message = format!("Silindi: {}", target);
+            self.refresh_notepad_files();
+            let next_idx = self
+                .notepad
+                .selected_file_idx
+                .min(self.notepad.files.len().saturating_sub(1));
+            self.select_notepad_file(next_idx);
+            true
+        } else {
+            self.notepad.status_message = format!("Silinemedi: {}", target);
+            false
+        }
     }
 
     pub fn save_notepad(&mut self) {
-        if fs::write("notes.txt", &self.notepad.content).is_ok() {
-            self.notepad.status_message = "notes.txt başarıyla kaydedildi".to_string();
+        let target = if self.notepad.active_file.trim().is_empty() {
+            "notes.txt".to_string()
         } else {
-            self.notepad.status_message = "Hata: Dosyaya yazılamadı".to_string();
+            self.notepad.active_file.clone()
+        };
+        if let Some(parent) = Path::new(&target).parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = fs::create_dir_all(parent);
+            }
+        }
+        if fs::write(&target, &self.notepad.content).is_ok() {
+            self.notepad.status_message = format!("Kaydedildi: {}", target);
+            self.refresh_notepad_files();
+        } else {
+            self.notepad.status_message = "Hata: Dosyaya yazilamadi".to_string();
+        }
+    }
+
+    /// Açık diyalog veya AI analiz penceresini doğrudan `reports/` altına `.md` olarak kaydeder.
+    pub fn save_dialog_to_markdown(&mut self) -> Option<String> {
+        let res = self.save_dialog_to_markdown_in(Path::new("reports"));
+        if res.is_some() {
+            self.refresh_notepad_files();
+        }
+        res
+    }
+
+    pub fn save_dialog_to_markdown_in(&mut self, dir: &Path) -> Option<String> {
+        let _ = fs::create_dir_all(dir);
+        let now = chrono::Utc::now();
+        let slug = sanitize_filename_slug(&self.dialog_title);
+        let prefix = if slug.contains("gemini") {
+            "ai_sitrep".to_string()
+        } else if slug.is_empty() {
+            "dossier".to_string()
+        } else {
+            slug
+        };
+        let path = dir.join(format!("{}_{}.md", prefix, now.format("%Y%m%d_%H%M%S")));
+        let mut md = format!(
+            "# {}\n\n- **Olusturma:** {}\n- **Istasyon:** {} ({:.4}N, {:.4}E)\n\n---\n\n",
+            self.dialog_title,
+            now.format("%Y-%m-%d %H:%M:%S UTC"),
+            self.config.station.callsign,
+            self.station_lat,
+            self.station_lon,
+        );
+        md.push_str(&self.dialog_content.join("\n"));
+        md.push('\n');
+
+        if fs::write(&path, &md).is_ok() {
+            let pstr = path.to_string_lossy().into_owned();
+            self.live_status = format!("DOSYAYA KAYDEDILDI: {}", pstr);
+            self.notepad.status_message = format!("Rapor kaydedildi: {}", pstr);
+            Some(pstr)
+        } else {
+            None
+        }
+    }
+
+    /// Yeni üretilen Gemini AI raporunu otomatik olarak `reports/` arşivine yazar.
+    pub fn auto_save_ai_report_markdown(&mut self, title: &str, report: &str) -> Option<String> {
+        let dir = Path::new("reports");
+        let _ = fs::create_dir_all(dir);
+        let now = chrono::Utc::now();
+        let path = dir.join(format!("ai_sitrep_{}.md", now.format("%Y%m%d_%H%M%S")));
+        let mut md = format!(
+            "# {}\n\n- **Olusturma:** {}\n- **Istasyon:** {} ({:.4}N, {:.4}E)\n\n---\n\n",
+            title,
+            now.format("%Y-%m-%d %H:%M:%S UTC"),
+            self.config.station.callsign,
+            self.station_lat,
+            self.station_lon,
+        );
+        md.push_str(report);
+        md.push('\n');
+        if fs::write(&path, &md).is_ok() {
+            let pstr = path.to_string_lossy().into_owned();
+            self.refresh_notepad_files();
+            Some(pstr)
+        } else {
+            None
+        }
+    }
+
+    /// N-5: Tüm istihbarat katmanlarını ve AI SITREP raporunu karanlık tema HTML Brifing dosyasına aktarır.
+    pub fn export_html_briefing_deck(&mut self) -> Option<String> {
+        let res = self.export_html_briefing_deck_in(Path::new("reports"));
+        if res.is_some() {
+            self.refresh_notepad_files();
+        }
+        res
+    }
+
+    pub fn export_html_briefing_deck_in(&mut self, dir: &Path) -> Option<String> {
+        let _ = fs::create_dir_all(dir);
+        let now = chrono::Utc::now();
+        let path = dir.join(format!("briefing_{}.html", now.format("%Y%m%d_%H%M%S")));
+
+        let defcon_str = self
+            .defcon_status
+            .as_ref()
+            .map(|d| format!("DEFCON {} ({})", d.overall_level, d.source))
+            .unwrap_or_else(|| "DEFCON --".to_string());
+
+        let ai_body = if let Some((ts, rep)) = &self.ai_last_report {
+            format!("<h4>Olusturma: {} UTC</h4><pre>{}</pre>", ts.format("%Y-%m-%d %H:%M"), html_escape(rep))
+        } else if self.is_dialog_open && self.dialog_title.contains("GEMINI AI") {
+            format!("<pre>{}</pre>", html_escape(&self.dialog_content.join("\n")))
+        } else {
+            "<p class=\"muted\">Henuz uretilmis AI SITREP bulunmuyor (TUI icinden Shift+A ile uretebilirsiniz).</p>".to_string()
+        };
+
+        let mut notam_rows = String::new();
+        for w in self.airspace_warnings.iter().take(25) {
+            notam_rows.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                html_escape(&w.kind),
+                html_escape(&w.fir_or_zone),
+                html_escape(&w.hazard),
+                w.top_fl.map(|fl| format!("FL{}", fl)).unwrap_or_else(|| "-".to_string()),
+                html_escape(&w.summary),
+            ));
+        }
+
+        let mut fusion_rows = String::new();
+        for f in self.fusion_clusters.iter().take(15) {
+            fusion_rows.push_str(&format!(
+                "<tr><td><b>{}</b></td><td>{:.2}N, {:.2}E</td><td>{}</td><td>{}</td></tr>\n",
+                f.score,
+                f.lat,
+                f.lon,
+                html_escape(&f.domains.join(" + ")),
+                html_escape(&f.summary),
+            ));
+        }
+
+        let mut mil_air_rows = String::new();
+        for t in self.air_targets.iter().filter(|t| t.is_military).take(25) {
+            let d = haversine_km(self.station_lat, self.station_lon, t.geo.lat, t.geo.lon);
+            mil_air_rows.push_str(&format!(
+                "<tr><td><b>{}</b></td><td>{}</td><td>{}</td><td>{:.2}N, {:.2}E</td><td>{:.0} km</td><td>{:.0} kt</td><td>{}</td></tr>\n",
+                html_escape(&t.callsign),
+                html_escape(&t.id),
+                html_escape(t.airframe_or_vessel_class.as_deref().unwrap_or("-")),
+                t.geo.lat,
+                t.geo.lon,
+                d,
+                t.speed_kts.unwrap_or(0.0),
+                html_escape(t.origin.as_deref().unwrap_or("KURESEL")),
+            ));
+        }
+
+        let mut conflict_rows = String::new();
+        for c in self.acled_events.iter().take(20) {
+            conflict_rows.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n",
+                html_escape(&c.event_date),
+                html_escape(&c.event_type),
+                html_escape(&c.country),
+                html_escape(&c.location),
+                html_escape(&c.actor1),
+            ));
+        }
+
+        let html = format!(
+            "<!DOCTYPE html><html lang=\"tr\"><head><meta charset=\"utf-8\"/>\
+            <title>Project Sentinel // C4ISR Brifing ({stamp})</title>\
+            <style>\
+            body{{background:#0f1115;color:#dce0e6;font-family:ui-monospace,Consolas,monospace;margin:24px;line-height:1.45;}}\
+            h1,h2,h3{{color:#76a2c2;border-bottom:1px solid #2b313c;padding-bottom:6px;}}\
+            .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:14px 0;}}\
+            .card{{background:#161a22;border:1px solid #2d3440;border-radius:6px;padding:10px 12px;}}\
+            .val{{font-size:18px;font-weight:bold;color:#ccaa60;}}\
+            .defcon{{color:#e06c58;}}\
+            .muted{{color:#8b949e;}}\
+            pre{{background:#141820;border:1px solid #2d3440;border-radius:6px;padding:14px;white-space:pre-wrap;color:#dce0e6;}}\
+            table{{width:100%;border-collapse:collapse;margin:10px 0 22px;background:#141820;font-size:12px;}}\
+            th,td{{border:1px solid #262c36;padding:6px 8px;text-align:left;}}\
+            th{{background:#1b2029;color:#76a2c2;}}\
+            </style></head><body>\
+            <h1>PROJECT SENTINEL (ARGUS C4ISR) // BRIFING PAKETI</h1>\
+            <p><b>Zaman:</b> {stamp} UTC &nbsp;|&nbsp; <b>Istasyon:</b> {callsign} ({slat:.4}N, {slon:.4}E) &nbsp;|&nbsp; <b class=\"defcon\">{defcon}</b></p>\
+            <div class=\"grid\">\
+              <div class=\"card\"><div class=\"muted\">HAVA (ASKERI/TOPLAM)</div><div class=\"val\">{mil_air} / {tot_air}</div></div>\
+              <div class=\"card\"><div class=\"muted\">DENIZ (AIS)</div><div class=\"val\">{tot_sea}</div></div>\
+              <div class=\"card\"><div class=\"muted\">UYDU (SGP4)</div><div class=\"val\">{tot_sat}</div></div>\
+              <div class=\"card\"><div class=\"muted\">NOTAM / SIGMET / JAM</div><div class=\"val\">{tot_notam}</div></div>\
+              <div class=\"card\"><div class=\"muted\">K-4 FUZYON</div><div class=\"val\">{tot_fuz}</div></div>\
+              <div class=\"card\"><div class=\"muted\">CATISMA / FIRMS / DEPREM</div><div class=\"val\">{tot_conf} / {tot_fire} / {tot_eq}</div></div>\
+            </div>\
+            <h2>1. GEMINI AI STRATEJIK ISTIHBARAT ANALIZI</h2>\
+            {ai_body}\
+            <h2>2. K-4 COKLU-SENSOR FUZYON KUMELERI</h2>\
+            <table><tr><th>Skor</th><th>Konum</th><th>Alanlar</th><th>Ozet</th></tr>{fusion_rows}</table>\
+            <h2>3. N-4 HAVA SAHASI, NOTAM, SIGMET & GPS-JAMMING</h2>\
+            <table><tr><th>Tip</th><th>FIR / Bolge</th><th>Tehlike</th><th>Tavan</th><th>Detay</th></tr>{notam_rows}</table>\
+            <h2>4. ONCELIKLI ASKERI HAVA UNSURLARI (ILK 25)</h2>\
+            <table><tr><th>Cagri</th><th>ICAO</th><th>Tip</th><th>Konum</th><th>Mesafe</th><th>Hiz</th><th>AOR</th></tr>{mil_air_rows}</table>\
+            <h2>5. KURESEL CATISMA OLAYLARI (ACLED / GDELT CAMEO)</h2>\
+            <table><tr><th>Tarih</th><th>Tur</th><th>Ulke</th><th>Konum</th><th>Aktor</th></tr>{conflict_rows}</table>\
+            </body></html>",
+            stamp = now.format("%Y-%m-%d %H:%M:%S"),
+            callsign = html_escape(&self.config.station.callsign),
+            slat = self.station_lat,
+            slon = self.station_lon,
+            defcon = html_escape(&defcon_str),
+            mil_air = self.air_targets.iter().filter(|t| t.is_military).count(),
+            tot_air = self.air_targets.len(),
+            tot_sea = self.sea_targets.len(),
+            tot_sat = self.satellites.len(),
+            tot_notam = self.airspace_warnings.len(),
+            tot_fuz = self.fusion_clusters.len(),
+            tot_conf = self.acled_events.len(),
+            tot_fire = self.firms_fires.len(),
+            tot_eq = self.earthquakes.len(),
+            ai_body = ai_body,
+            fusion_rows = if fusion_rows.is_empty() { "<tr><td colspan=\"4\" class=\"muted\">Aktif fuzyon kumesi yok.</td></tr>".to_string() } else { fusion_rows },
+            notam_rows = if notam_rows.is_empty() { "<tr><td colspan=\"5\" class=\"muted\">Aktif uyari yok.</td></tr>".to_string() } else { notam_rows },
+            mil_air_rows = if mil_air_rows.is_empty() { "<tr><td colspan=\"7\" class=\"muted\">Askeri hedef yok.</td></tr>".to_string() } else { mil_air_rows },
+            conflict_rows = if conflict_rows.is_empty() { "<tr><td colspan=\"5\" class=\"muted\">Catisma verisi yok.</td></tr>".to_string() } else { conflict_rows },
+        );
+
+        if fs::write(&path, &html).is_ok() {
+            let pstr = path.to_string_lossy().into_owned();
+            self.live_status = format!("HTML BRIFING OLUSTURULDU: {}", pstr);
+            self.notepad.status_message = format!("HTML brifing: {}", pstr);
+            Some(pstr)
+        } else {
+            None
         }
     }
 
@@ -1184,6 +1523,39 @@ impl AppState {
     }
 }
 
+fn sanitize_filename_slug(raw: &str) -> String {
+    let mut slug = String::new();
+    let mut last_us = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            last_us = false;
+        } else if !last_us && !slug.is_empty() {
+            slug.push('_');
+            last_us = true;
+        }
+        if slug.len() >= 28 {
+            break;
+        }
+    }
+    slug.trim_end_matches('_').to_string()
+}
+
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1295,5 +1667,54 @@ mod tests {
         assert!(state.target_trails.contains_key("FRESH_AIR"));
         assert!(!state.target_trails.contains_key("STALE_AIR"));
         assert!(!state.target_trails.contains_key("STALE_SEA"));
+    }
+
+    #[test]
+    fn test_save_dialog_to_markdown_and_export_html() {
+        let tmp_dir = std::env::temp_dir().join("argus_osint_test_exports");
+        let _ = fs::remove_dir_all(&tmp_dir);
+
+        let mut state = AppState::new(AppConfig::default());
+        state.open_dialog(
+            "GEMINI AI ANALIZ RAPORU (16:00 UTC)".to_string(),
+            vec![
+                "### 1. STRATEJIK DURUM".to_string(),
+                "[NOKTA 1: Dogu Akdeniz] | Risk Skoru: 82/100".to_string(),
+            ],
+        );
+        state.ai_last_report = Some((
+            chrono::Utc::now(),
+            "Test <SITREP> & \"Escaped\" Flashpoint Raporu".to_string(),
+        ));
+        state.airspace_warnings.push(AirspaceWarning {
+            id: "WARN1".to_string(),
+            fir_or_zone: "LLLL".to_string(),
+            kind: "NOTAM-CONFLICT".to_string(),
+            hazard: "ASKERI CATISMA SAHASI".to_string(),
+            top_fl: Some(660),
+            polygon: vec![(34.0, 31.0), (36.0, 31.0), (36.0, 33.5), (34.0, 31.0)],
+            center_lat: 32.0,
+            center_lon: 35.0,
+            summary: "Aktif NOTAM sahasi".to_string(),
+        });
+
+        let md_path = state
+            .save_dialog_to_markdown_in(&tmp_dir)
+            .expect("MD save failed");
+        assert!(md_path.ends_with(".md"));
+        let md_content = fs::read_to_string(&md_path).unwrap();
+        assert!(md_content.contains("GEMINI AI ANALIZ RAPORU"));
+        assert!(md_content.contains("Dogu Akdeniz"));
+
+        let html_path = state
+            .export_html_briefing_deck_in(&tmp_dir)
+            .expect("HTML briefing failed");
+        assert!(html_path.ends_with(".html"));
+        let html_content = fs::read_to_string(&html_path).unwrap();
+        assert!(html_content.contains("PROJECT SENTINEL"));
+        assert!(html_content.contains("&lt;SITREP&gt; &amp; &quot;Escaped&quot;"));
+        assert!(html_content.contains("NOTAM-CONFLICT"));
+
+        let _ = fs::remove_dir_all(&tmp_dir);
     }
 }

@@ -50,6 +50,13 @@ pub enum HitTarget {
     ExportReport,
     TriggerAiAnalysis,
     DefconBadge,
+    DialogSaveFile,
+    DialogExportNote,
+    DialogExportHtml,
+    AiMode(usize),
+    AiRefresh,
+    NotepadFile(usize),
+    NotepadAction(usize),
 }
 
 #[derive(Debug, Clone, Default)]
