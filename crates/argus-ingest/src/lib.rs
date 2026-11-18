@@ -306,6 +306,39 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
             loop {
                 if let Some(defcon) = defcon_osint::fetch_osint_defcon(&client).await {
                     let mut lock = st.write();
+                    let prev_lvl = lock.defcon_status.as_ref().map(|d| d.overall_level);
+                    let lvl_changed = prev_lvl.is_some_and(|p| p != defcon.overall_level);
+                    if defcon.overall_level <= 3 || lvl_changed {
+                        let sev = if defcon.overall_level <= 2 {
+                            argus_core::types::ThreatSeverity::Emergency
+                        } else if defcon.overall_level == 3 {
+                            argus_core::types::ThreatSeverity::Critical
+                        } else {
+                            argus_core::types::ThreatSeverity::Advisory
+                        };
+                        let msg = if lvl_changed {
+                            format!(
+                                "[DEFCON] Seviye Degisti: DEFCON {} -> DEFCON {} ({})",
+                                prev_lvl.unwrap_or(5),
+                                defcon.overall_level,
+                                defcon.source
+                            )
+                        } else {
+                            format!(
+                                "[DEFCON] Yuksek Hazirlik: DEFCON {} ({})",
+                                defcon.overall_level, defcon.source
+                            )
+                        };
+                        let item = argus_core::types::AlertItem {
+                            timestamp: chrono::Utc::now(),
+                            domain: "DEFCON".to_string(),
+                            severity: sev,
+                            message: msg,
+                            target_id: Some("SYS:DEFCON".to_string()),
+                        };
+                        lock.alerts
+                            .upsert_by(item, |a| a.target_id.as_deref() == Some("SYS:DEFCON"));
+                    }
                     lock.defcon_status = Some(defcon);
                     lock.total_events_received = lock.total_events_received.wrapping_add(1);
                 }

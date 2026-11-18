@@ -63,8 +63,8 @@ pub fn render_cyberint_view(frame: &mut Frame, area: Rect, state: &mut AppState)
 
     let query_p = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled("SHODAN + INTERNETDB ALTYAPI KESIF TERMINALI ", Style::default().fg(TELETEXT_CYAN).add_modifier(Modifier::BOLD)),
-            Span::styled("│ [CANLI PORT, CPE & CVE ANALIZI]", Style::default().fg(TELETEXT_GREEN)),
+            Span::styled("SHODAN + RIPE BGP + CANLI PORT KESIF TERMINALI ", Style::default().fg(TELETEXT_CYAN).add_modifier(Modifier::BOLD)),
+            Span::styled("│ [HIBRIT ALTYAPI, ASN & TCP/BANNER TARAMA]", Style::default().fg(TELETEXT_GREEN)),
         ]),
         Line::from(line2),
     ])
@@ -73,7 +73,7 @@ pub fn render_cyberint_view(frame: &mut Frame, area: Rect, state: &mut AppState)
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(BORDER_ACTIVE))
-            .title(" [ CYBERINT // SHODAN RECON TERMINALI ] ")
+            .title(" [ CYBERINT // HIBRIT ALTYAPI, BGP & CANLI PORT KESIF TERMINALI ] ")
             .style(Style::default().bg(BG_PANEL).fg(FG_PRIMARY)),
     );
     frame.render_widget(query_p, chunks[0]);

@@ -13,10 +13,49 @@ use ratatui::{
 };
 
 pub fn render_dashboard_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
+    // [H-2] Panel Buyutme (Z / Bosluk / 1-6) Destegi
+    if let Some(zoomed) = state.zoomed_tile {
+        match zoomed {
+            0 => {
+                let map_block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(BORDER_ACTIVE))
+                    .title(" [ [0] COGRAFI OPERASYON SAHASI - TAM EKRAN (Z/Esc: Kucult) ] ")
+                    .style(Style::default().bg(BG_PRIMARY));
+                let map_inner = map_block.inner(area);
+                frame.render_widget(map_block, area);
+                render_p100_map(frame, map_inner, state);
+                return;
+            }
+            1 => {
+                render_osint_and_cyber_feed(frame, area, state);
+                return;
+            }
+            2 => {
+                render_proximity_radar_table(frame, area, state);
+                return;
+            }
+            3 => {
+                render_sat_and_seismic_feed(frame, area, state);
+                return;
+            }
+            4 => {
+                render_sigint_eam_feed(frame, area, state);
+                return;
+            }
+            5 => {
+                render_inspector_panel(frame, area, state);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     // 3-Sutunlu C4ISR Komuta Merkezi Mimarisi:
-    // Sol (%48): Taktik Harita (Ust) + Yakinlik Radari Tablosu (Alt)
-    // Orta (%27): Canli Coklu-Istihbarat Akis Sutunu (SIGINT EAM + Uydu/Sismik + OSINT/Siber)
-    // Sag (%25): Kalici Hedef Denetcisi, Telemetri ve Operasyonel Komut Paneli
+    // Sol (%48): Taktik Harita [0] (Ust) + Yakinlik Radari Tablosu [2] (Alt)
+    // Orta (%27): Canli Coklu-Istihbarat Akis Sutunu ([4] SIGINT EAM + [3] Uydu/Sismik/Catisma + [1] OSINT/Siber)
+    // Sag (%25): [5] Kalici Hedef Denetcisi, Telemetri ve Operasyonel Komut Paneli
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -34,11 +73,16 @@ pub fn render_dashboard_view(frame: &mut Frame, area: Rect, state: &mut AppState
         .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
         .split(cols[0]);
 
+    let map_border = if state.active_tile == 0 {
+        BORDER_ACTIVE
+    } else {
+        BORDER_DIM
+    };
     let map_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(BORDER_ACTIVE))
-        .title(" [ COGRAFI OPERASYON SAHASI (Tikla: Hedef Sec | Surukle: Kaydir | Tekerlek: Zoom) ] ")
+        .border_style(Style::default().fg(map_border))
+        .title(" [ [1] COGRAFI SAHASI (Z: Buyut | Tikla: Sec | Tekerlek: Zoom) ] ")
         .style(Style::default().bg(BG_PRIMARY));
     let map_inner = map_block.inner(left_rows[0]);
     frame.render_widget(map_block, left_rows[0]);
@@ -226,13 +270,14 @@ fn render_proximity_radar_table(frame: &mut Frame, area: Rect, state: &mut AppSt
         Constraint::Min(6),
     ];
 
+    let radar_border = if state.active_tile == 2 { BORDER_ACTIVE } else { BORDER_DIM };
     let table = Table::new(rows, widths).header(header).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(BORDER_DIM))
+            .border_style(Style::default().fg(radar_border))
             .title(format!(
-                " [ BIRLESIK HAVA & DENIZ RADAR AKISI ({} Hedef) ] ",
+                " [ [3] BIRLESIK HAVA & DENIZ RADAR AKISI ({} Hedef) ] ",
                 total_targets
             ))
             .style(Style::default().bg(BG_PANEL)),
@@ -285,12 +330,13 @@ fn render_sigint_eam_feed(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
     }
 
+    let sig_border = if state.active_tile == 4 { BORDER_ACTIVE } else { BORDER_DIM };
     let p = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(BORDER_DIM))
-            .title(" [ SIGINT // HFGCS EAM & KIWISDR (F5) ] ")
+            .border_style(Style::default().fg(sig_border))
+            .title(" [ [5] SIGINT // HFGCS EAM & KIWISDR (F5) ] ")
             .style(Style::default().bg(BG_PANEL)),
     );
     frame.render_widget(p, area);
@@ -299,10 +345,10 @@ fn render_sigint_eam_feed(frame: &mut Frame, area: Rect, state: &mut AppState) {
 fn render_sat_and_seismic_feed(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let mut lines = Vec::new();
     let avail = area.height.saturating_sub(2) as usize;
-    let half = (avail / 2).max(2);
+    let part = (avail / 3).max(2);
 
     let mut row_y = area.y + 1;
-    for (idx, sat) in state.satellites.iter().take(half).enumerate() {
+    for (idx, sat) in state.satellites.iter().take(part).enumerate() {
         let status = if sat.el_deg > 0.0 {
             format!("EL:{:+.0} deg (UFUKTA)", sat.el_deg)
         } else {
@@ -331,7 +377,7 @@ fn render_sat_and_seismic_feed(frame: &mut Frame, area: Rect, state: &mut AppSta
         .earthquakes
         .iter()
         .enumerate()
-        .take(avail.saturating_sub(lines.len()))
+        .take(part.min(avail.saturating_sub(lines.len())))
     {
         let col = if q.mag >= 5.0 {
             TELETEXT_RED
@@ -359,12 +405,44 @@ fn render_sat_and_seismic_feed(frame: &mut Frame, area: Rect, state: &mut AppSta
         }
     }
 
+    for (a_idx, ev) in state
+        .acled_events
+        .iter()
+        .enumerate()
+        .take(avail.saturating_sub(lines.len()))
+    {
+        let col = if ev.fatalities > 0 { TELETEXT_RED } else { TELETEXT_YELLOW };
+        lines.push(Line::from(vec![
+            Span::styled(
+                "[CATISMA] ",
+                Style::default().fg(col).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}: {} ({})", ev.country, ev.location, ev.event_type),
+                Style::default().fg(FG_PRIMARY),
+            ),
+        ]));
+        if row_y < area.y + area.height.saturating_sub(1) {
+            state.hit_tester.register(
+                Rect {
+                    x: area.x + 1,
+                    y: row_y,
+                    width: area.width.saturating_sub(2),
+                    height: 1,
+                },
+                HitTarget::TableRow(52, a_idx),
+            );
+            row_y += 1;
+        }
+    }
+
+    let sat_border = if state.active_tile == 3 { BORDER_ACTIVE } else { BORDER_DIM };
     let p = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(BORDER_DIM))
-            .title(" [ SGP4 UYDU GECISLERI (F8) & SISMIK AGI (F9) ] ")
+            .border_style(Style::default().fg(sat_border))
+            .title(" [ [4] UYDU, SISMIK & CATISMA / GDELT (F8/F9) ] ")
             .style(Style::default().bg(BG_PANEL)),
     );
     frame.render_widget(p, area);
@@ -430,12 +508,13 @@ fn render_osint_and_cyber_feed(frame: &mut Frame, area: Rect, state: &mut AppSta
         }
     }
 
+    let os_border = if state.active_tile == 1 { BORDER_ACTIVE } else { BORDER_DIM };
     let p = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(BORDER_DIM))
-            .title(" [ KRIZ HABER AKISI (F6) & CISA/IODA SIBER (F7) ] ")
+            .border_style(Style::default().fg(os_border))
+            .title(" [ [2] KRIZ HABER AKISI (F6) & SIBER (F7) ] ")
             .style(Style::default().bg(BG_PANEL)),
     );
     frame.render_widget(p, area);

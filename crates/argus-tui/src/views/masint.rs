@@ -67,14 +67,16 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     };
 
     let tabs = [
-        (0usize, format!("[1: DEPREM ({})]", state.earthquakes.len())),
-        (1usize, format!("[2: FIRMS TERMAL ({})]", state.firms_fires.len())),
-        (2usize, format!("[3: SAFECAST CBRN ({})]", state.radiation_measurements.len())),
+        (0usize, format!("[1:DEPREM({})]", state.earthquakes.len())),
+        (1usize, format!("[2:TERMAL({})]", state.firms_fires.len())),
+        (2usize, format!("[3:CBRN({})]", state.radiation_measurements.len())),
+        (3usize, format!("[4:CATISMA({})]", state.acled_events.len())),
+        (4usize, format!("[5:NOTAM({})]", state.airspace_warnings.len())),
     ];
     let mut tab_spans = vec![
-        Span::styled("VERI KATMANI: ", Style::default().fg(FG_MUTED).add_modifier(Modifier::BOLD)),
+        Span::styled("KATMAN: ", Style::default().fg(FG_MUTED).add_modifier(Modifier::BOLD)),
     ];
-    let mut tx = left_chunks[0].x + 1 + 14;
+    let mut tx = left_chunks[0].x + 1 + 8;
     for (tid, lbl) in &tabs {
         let active = state.masint_tab == *tid;
         let w = lbl.chars().count() as u16;
@@ -99,7 +101,7 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
             tx += w + 1;
         }
     }
-    tab_spans.push(Span::styled(format!(" │ HF: {}", hf_impact), Style::default().fg(sw_col)));
+    tab_spans.push(Span::styled(format!("│ HF: {}", hf_impact), Style::default().fg(sw_col)));
 
     let sw_p = Paragraph::new(vec![
         Line::from(vec![
@@ -113,7 +115,7 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(BORDER_DIM))
-            .title(" [ MASINT // NOAA SWPC + SISMIK + TERMAL + CBRN ] ")
+            .title(" [ MASINT // NOAA SWPC + SISMIK + TERMAL + CBRN + GDELT + NOTAM ] ")
             .style(Style::default().bg(BG_PANEL).fg(FG_PRIMARY)),
     );
     frame.render_widget(sw_p, left_chunks[0]);
@@ -136,6 +138,11 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
             let mut rows = Vec::new();
             for (offset, f) in state.firms_fires.iter().skip(scroll).take(avail_h).enumerate() {
                 let actual_idx = scroll + offset;
+                let st = if offset == 0 {
+                    Style::default().fg(TELETEXT_YELLOW).bg(BG_HIGHLIGHT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TELETEXT_RED)
+                };
                 rows.push(
                     Row::new(vec![
                         Cell::from(format!("{} VIIRS", f.satellite)),
@@ -144,7 +151,7 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
                         Cell::from(format!("%{}", f.confidence)),
                         Cell::from(format!("{} {}", f.acq_date, f.acq_time)),
                     ])
-                    .style(Style::default().fg(TELETEXT_RED)),
+                    .style(st),
                 );
                 state.hit_tester.register(
                     Rect {
@@ -203,6 +210,11 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
                     ("NORMAL FON", TELETEXT_GREEN)
                 };
                 let loc = rad.location_name.as_deref().unwrap_or("Geiger Istasyonu");
+                let row_st = if offset == 0 {
+                    Style::default().fg(TELETEXT_YELLOW).bg(BG_HIGHLIGHT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(status_col)
+                };
                 rows.push(
                     Row::new(vec![
                         Cell::from(format!("#{}", rad.id)),
@@ -212,7 +224,7 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
                         Cell::from(loc),
                         Cell::from(format!("{:.3}N, {:.3}E", rad.lat, rad.lon)),
                     ])
-                    .style(Style::default().fg(status_col)),
+                    .style(row_st),
                 );
                 state.hit_tester.register(
                     Rect {
@@ -250,6 +262,143 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 frame.render_stateful_widget(Scrollbar::new(ScrollbarOrientation::VerticalRight), table_area, &mut sb);
             }
         }
+        3 => {
+            let c_total = state.acled_events.len();
+            let scroll = state.geo_scroll.min(c_total.saturating_sub(1));
+            let header = Row::new(
+                ["TARIH", "ULKE / KONUM", "OLAY TURU", "AKTORLER", "NOT / DETAY"]
+                    .into_iter()
+                    .map(|h| Cell::from(h).style(Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD))),
+            )
+            .style(Style::default().bg(BG_SURFACE));
+
+            let mut rows = Vec::new();
+            for (offset, ev) in state.acled_events.iter().skip(scroll).take(avail_h).enumerate() {
+                let actual_idx = scroll + offset;
+                let row_st = if offset == 0 {
+                    Style::default().fg(TELETEXT_YELLOW).bg(BG_HIGHLIGHT).add_modifier(Modifier::BOLD)
+                } else if ev.fatalities > 0 {
+                    Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(TELETEXT_CYAN)
+                };
+                let actors = match ev.actor2.as_deref() {
+                    Some(a2) if !a2.is_empty() => format!("{} vs {}", ev.actor1, a2),
+                    _ => ev.actor1.clone(),
+                };
+                rows.push(
+                    Row::new(vec![
+                        Cell::from(ev.event_date.as_str()),
+                        Cell::from(format!("{}, {}", ev.location, ev.country)),
+                        Cell::from(format!("{} ({})", ev.event_type, ev.fatalities)),
+                        Cell::from(actors),
+                        Cell::from(ev.notes.as_str()),
+                    ])
+                    .style(row_st),
+                );
+                state.hit_tester.register(
+                    Rect {
+                        x: table_area.x + 1,
+                        y: table_area.y + 2 + offset as u16,
+                        width: table_area.width.saturating_sub(2),
+                        height: 1,
+                    },
+                    HitTarget::TableRow(52, actual_idx),
+                );
+            }
+            let tbl = Table::new(
+                rows,
+                [
+                    Constraint::Length(12),
+                    Constraint::Length(24),
+                    Constraint::Length(22),
+                    Constraint::Length(24),
+                    Constraint::Min(20),
+                ],
+            )
+            .header(header)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(BORDER_DIM))
+                    .title(format!(" [ GDELT / ACLED KINETIK CATISMA & KRIZ OLAYLARI ({}/{}) ] ", (scroll + 1).min(c_total), c_total))
+                    .style(Style::default().bg(BG_PRIMARY).fg(FG_PRIMARY)),
+            );
+            frame.render_widget(tbl, table_area);
+            if c_total > avail_h {
+                let mut sb = ScrollbarState::new(c_total).position(scroll);
+                frame.render_stateful_widget(Scrollbar::new(ScrollbarOrientation::VerticalRight), table_area, &mut sb);
+            }
+        }
+        4 => {
+            let n_total = state.airspace_warnings.len();
+            let scroll = state.geo_scroll.min(n_total.saturating_sub(1));
+            let header = Row::new(
+                ["TUR", "FIR / BOLGE", "TEHLIKE", "UST IRTIFA", "OZET"]
+                    .into_iter()
+                    .map(|h| Cell::from(h).style(Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD))),
+            )
+            .style(Style::default().bg(BG_SURFACE));
+
+            let mut rows = Vec::new();
+            for (offset, aw) in state.airspace_warnings.iter().skip(scroll).take(avail_h).enumerate() {
+                let actual_idx = scroll + offset;
+                let row_st = if offset == 0 {
+                    Style::default().fg(TELETEXT_YELLOW).bg(BG_HIGHLIGHT).add_modifier(Modifier::BOLD)
+                } else {
+                    match aw.kind.as_str() {
+                        "NOTAM-CONFLICT" => Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD),
+                        "GPS-JAM" => Style::default().fg(TELETEXT_MAGENTA),
+                        _ => Style::default().fg(TELETEXT_YELLOW),
+                    }
+                };
+                let fl = aw.top_fl.map(|f| format!("FL{}", f)).unwrap_or_else(|| "SFC-UNL".to_string());
+                rows.push(
+                    Row::new(vec![
+                        Cell::from(aw.kind.as_str()),
+                        Cell::from(aw.fir_or_zone.as_str()),
+                        Cell::from(aw.hazard.as_str()),
+                        Cell::from(fl),
+                        Cell::from(aw.summary.as_str()),
+                    ])
+                    .style(row_st),
+                );
+                state.hit_tester.register(
+                    Rect {
+                        x: table_area.x + 1,
+                        y: table_area.y + 2 + offset as u16,
+                        width: table_area.width.saturating_sub(2),
+                        height: 1,
+                    },
+                    HitTarget::TableRow(54, actual_idx),
+                );
+            }
+            let tbl = Table::new(
+                rows,
+                [
+                    Constraint::Length(16),
+                    Constraint::Length(22),
+                    Constraint::Length(18),
+                    Constraint::Length(11),
+                    Constraint::Min(24),
+                ],
+            )
+            .header(header)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(BORDER_DIM))
+                    .title(format!(" [ CANLI NOTAM / SIGMET / GPS-JAM HAVA SAHASI UYARILARI ({}/{}) ] ", (scroll + 1).min(n_total), n_total))
+                    .style(Style::default().bg(BG_PRIMARY).fg(FG_PRIMARY)),
+            );
+            frame.render_widget(tbl, table_area);
+            if n_total > avail_h {
+                let mut sb = ScrollbarState::new(n_total).position(scroll);
+                frame.render_stateful_widget(Scrollbar::new(ScrollbarOrientation::VerticalRight), table_area, &mut sb);
+            }
+        }
         _ => {
             let q_total = state.earthquakes.len();
             let scroll = state.geo_scroll.min(q_total.saturating_sub(1));
@@ -270,6 +419,11 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 } else {
                     TELETEXT_CYAN
                 };
+                let row_st = if offset == 0 {
+                    Style::default().fg(TELETEXT_YELLOW).bg(BG_HIGHLIGHT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(mag_col)
+                };
                 let src = if q.id.starts_with("KANDILLI") {
                     "KANDILLI"
                 } else if q.id.starts_with("EMSC") {
@@ -285,7 +439,7 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
                         Cell::from(q.place.as_str()),
                         Cell::from(q.time.format("%H:%M:%S").to_string()),
                     ])
-                    .style(Style::default().fg(mag_col)),
+                    .style(row_st),
                 );
                 state.hit_tester.register(
                     Rect {
@@ -328,7 +482,7 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let summary_lines = vec![
         Line::from(vec![
             Span::styled("Aktif Deprem   : ", Style::default().fg(FG_MUTED)),
-            Span::styled(format!("{} Kayit (USGS / Kandilli / EMSC)", state.earthquakes.len()), Style::default().fg(TELETEXT_YELLOW)),
+            Span::styled(format!("{} Kayit (USGS/Kandilli/EMSC)", state.earthquakes.len()), Style::default().fg(TELETEXT_YELLOW)),
         ]),
         Line::from(vec![
             Span::styled("Termal Anomali : ", Style::default().fg(FG_MUTED)),
@@ -338,8 +492,16 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
             Span::styled("Radyasyon CBRN : ", Style::default().fg(FG_MUTED)),
             Span::styled(format!("{} Safecast Sensoru", state.radiation_measurements.len()), Style::default().fg(TELETEXT_GREEN)),
         ]),
+        Line::from(vec![
+            Span::styled("Catisma / GDELT: ", Style::default().fg(FG_MUTED)),
+            Span::styled(format!("{} Kinetik Olay", state.acled_events.len()), Style::default().fg(TELETEXT_RED)),
+        ]),
+        Line::from(vec![
+            Span::styled("NOTAM / SIGMET : ", Style::default().fg(FG_MUTED)),
+            Span::styled(format!("{} Hava Sahasi Uyarisi", state.airspace_warnings.len()), Style::default().fg(TELETEXT_CYAN)),
+        ]),
         Line::from(""),
-        Line::from(Span::styled("[1/2/3] Sekme Sec | [Satira Tikla] Tam Analiz Dosyasi", Style::default().fg(FG_SECONDARY))),
+        Line::from(Span::styled("[1-5] Sekme Sec | [Enter/Tikla] Analiz Dosyasi", Style::default().fg(FG_SECONDARY))),
     ];
     let info_p = Paragraph::new(summary_lines).block(
         Block::default()

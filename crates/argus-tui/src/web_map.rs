@@ -234,6 +234,13 @@ async function refresh() {
         L.circle([j.lat, j.lon], { radius: 85000, color: '#b86088', fillOpacity: 0.12, weight: 1 })
           .bindPopup(`<b>EW GPS-JAM</b>: ${j.lbl}`).addTo(layerGroup);
       }
+      if (d.conflicts) {
+        for (const c of d.conflicts) {
+          L.circleMarker([c.lat, c.lon], { renderer: canvasRenderer, radius: 4.5, color: '#ef4444', fillColor: '#dc2626', fillOpacity: 0.85, weight: 1.5 })
+            .bindPopup(`<b>[CATISMA] ${c.type}</b> (${c.country})<br>${c.location} | Aktor: ${c.actor1}<br>${c.notes}`)
+            .addTo(layerGroup);
+        }
+      }
     }
 
     if (d.fusions) {
@@ -425,6 +432,23 @@ fn build_state_json(state: &Arc<RwLock<AppState>>) -> String {
         })
         .collect();
 
+    let conflicts: Vec<serde_json::Value> = st
+        .acled_events
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.event_id,
+                "type": c.event_type,
+                "country": c.country,
+                "location": c.location,
+                "actor1": c.actor1,
+                "lat": c.lat,
+                "lon": c.lon,
+                "notes": c.notes,
+            })
+        })
+        .collect();
+
     serde_json::json!({
         "station_lat": st.station_lat,
         "station_lon": st.station_lon,
@@ -436,6 +460,7 @@ fn build_state_json(state: &Arc<RwLock<AppState>>) -> String {
         "fires": fires,
         "rads": rads,
         "jams": jams,
+        "conflicts": conflicts,
         "fusions": fusions,
         "weather": weather,
         "airspace_warnings": airspace_warnings,

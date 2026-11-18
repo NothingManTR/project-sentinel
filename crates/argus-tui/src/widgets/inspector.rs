@@ -230,6 +230,66 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
                 ),
             ]));
         }
+    } else if state.selected_domain == 52 {
+        if let Some(ev) = state.acled_events.get(state.selected_row).or_else(|| state.acled_events.get(0)) {
+            let d_km = haversine_km(st_lat, st_lon, ev.lat, ev.lon);
+            lines.push(Line::from(Span::styled(
+                format!("CATISMA // {} ({})", ev.country, ev.event_type),
+                Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Konum / Tarih: ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(format!("{} | {}", ev.location, ev.event_date), Style::default().fg(FG_PRIMARY)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Aktorler     : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    format!("{} vs {}", ev.actor1, ev.actor2.as_deref().unwrap_or("-")),
+                    Style::default().fg(TELETEXT_YELLOW),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Zayiat/Mesafe: ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(format!("{} | {:.0} km", ev.fatalities, d_km), Style::default().fg(TELETEXT_CYAN)),
+            ]));
+            lines.push(Line::from(Span::styled(ev.notes.clone(), Style::default().fg(FG_PRIMARY))));
+        }
+    } else if state.selected_domain == 54 {
+        if let Some(aw) = state.airspace_warnings.get(state.selected_row).or_else(|| state.airspace_warnings.first()) {
+            lines.push(Line::from(Span::styled(
+                format!("{} // {}", aw.kind, aw.fir_or_zone),
+                Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Tehlike      : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(aw.hazard.clone(), Style::default().fg(TELETEXT_YELLOW)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Ust Irtifa   : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    aw.top_fl.map(|f| format!("FL{}", f)).unwrap_or_else(|| "SFC-UNL".to_string()),
+                    Style::default().fg(TELETEXT_CYAN),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(aw.summary.clone(), Style::default().fg(FG_PRIMARY))));
+        }
+    } else if state.selected_domain == 55 {
+        if let Some(fc) = state.fusion_clusters.get(state.selected_row).or_else(|| state.fusion_clusters.first()) {
+            let d_km = haversine_km(st_lat, st_lon, fc.lat, fc.lon);
+            lines.push(Line::from(Span::styled(
+                format!("K-4 FUZYON KUMESI // SKOR: {}", fc.score),
+                Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Alanlar      : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(fc.domains.join(" + "), Style::default().fg(TELETEXT_YELLOW)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Merkez/Mesafe: ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(format!("{:.2}N, {:.2}E ({:.0} km)", fc.lat, fc.lon, d_km), Style::default().fg(TELETEXT_CYAN)),
+            ]));
+            lines.push(Line::from(Span::styled(fc.summary.clone(), Style::default().fg(FG_PRIMARY))));
+        }
     }
 
     if lines.is_empty() {
@@ -382,7 +442,7 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
     }
 
     let show_air_photo = !state.is_dialog_open
-        && !matches!(state.selected_domain, 3 | 30 | 50)
+        && !matches!(state.selected_domain, 3 | 30 | 50 | 52 | 54 | 55)
         && inspected_track
             .as_ref()
             .is_some_and(|t| t.domain == Domain::Air);
@@ -401,10 +461,15 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
         }
     }
 
+    let detail_border = if state.active_tile == 5 || state.active_view != argus_core::types::ActiveView::Dashboard {
+        BORDER_ACTIVE
+    } else {
+        BORDER_DIM
+    };
     let detail_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER_ACTIVE))
-        .title(" [TEKNIK DENETCI (I) | O: Tam Dosya] ")
+        .border_style(Style::default().fg(detail_border))
+        .title(" [ [6] TEKNIK DENETCI (I) | O: Tam Dosya ] ")
         .style(Style::default().bg(BG_PANEL).fg(FG_PRIMARY));
     let detail_inner = detail_block.inner(chunks[0]);
     frame.render_widget(detail_block, chunks[0]);

@@ -714,6 +714,30 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
     }
 
+    // GDELT / ACLED Silahli Catisma Olaylari (✶) [Termal/Afet Katmanlariyla birlikte]
+    if (state.geoint_layers & 8 != 0) || (state.geoint_layers & 16 != 0) {
+        let conflicts: Vec<_> = state.acled_events.iter().cloned().collect();
+        for (idx, ev) in conflicts.iter().enumerate() {
+            if let Some((sx, sy)) = to_screen(ev.lon, ev.lat) {
+                let col = if ev.fatalities > 0 {
+                    TELETEXT_RED
+                } else {
+                    Color::Rgb(235, 130, 52)
+                };
+                put_overlay_str(frame.buffer_mut(), area, sx, sy, "✶", col, None, true);
+                state.hit_tester.register(
+                    Rect {
+                        x: sx,
+                        y: sy,
+                        width: 1,
+                        height: 1,
+                    },
+                    HitTarget::MapTarget(52, idx),
+                );
+            }
+        }
+    }
+
     // Safecast Radyasyon (%) [Katman 7]
     if state.geoint_layers & 64 != 0 {
         let rads: Vec<_> = state.radiation_measurements.iter().cloned().collect();
@@ -990,7 +1014,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
 
     // N-4: Canlı NOTAM / SIGMET / Çatışma Hava Sahası / GPS-JAM Çokgenleri (Opsiyonel Bit 11)
     if state.geoint_layers & (1 << 11) != 0 {
-        for aw in &state.airspace_warnings {
+        for (w_idx, aw) in state.airspace_warnings.iter().enumerate() {
             let col = match aw.kind.as_str() {
                 "NOTAM-CONFLICT" => TELETEXT_RED,
                 "GPS-JAM" => TELETEXT_MAGENTA,
@@ -1023,16 +1047,34 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                     _ => "[!SIG]",
                 };
                 put_overlay_str(frame.buffer_mut(), area, cx, cy, tag, col, Some(BG_PRIMARY), true);
+                state.hit_tester.register(
+                    Rect {
+                        x: cx,
+                        y: cy,
+                        width: (tag.len() as u16).min(area.x + area.width - cx),
+                        height: 1,
+                    },
+                    HitTarget::TableRow(54, w_idx),
+                );
             }
         }
     }
 
     // K-4: Çoklu-Sensör Füzyon Kriz Kümeleri (Bit 10)
     if state.geoint_layers & 1024 != 0 {
-        for fc in &state.fusion_clusters {
+        for (f_idx, fc) in state.fusion_clusters.iter().enumerate() {
             if let Some((sx, sy)) = to_screen(fc.lon, fc.lat) {
                 let lbl = format!("[FUZ:{}]", fc.score);
                 put_overlay_str(frame.buffer_mut(), area, sx, sy, &lbl, TELETEXT_RED, Some(BG_PRIMARY), true);
+                state.hit_tester.register(
+                    Rect {
+                        x: sx,
+                        y: sy,
+                        width: (lbl.len() as u16).min(area.x + area.width - sx),
+                        height: 1,
+                    },
+                    HitTarget::TableRow(55, f_idx),
+                );
             }
         }
     }

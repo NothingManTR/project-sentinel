@@ -666,6 +666,14 @@ impl AppState {
                 format!("YAKIN ASKERI HEDEF: {} ({}) - {:.0} km", track.callsign, id, dist_km),
             ));
         }
+        if let Some(anom) = self.track_anomalies.get(id) {
+            if anom.contains("ORBIT") || anom.contains("REFUEL") || anom.contains("LOW-FAST") {
+                return Some((
+                    ThreatSeverity::Warning,
+                    format!("[ANOMALI] {} ({}): {} - {:.0} km", track.callsign, id, anom, dist_km),
+                ));
+            }
+        }
         if track.is_military {
             const CORRIDORS: &[(&str, f64, f64, f64)] = &[
                 ("Istanbul Bogazi", 41.12, 29.07, 45.0),
@@ -981,6 +989,29 @@ impl AppState {
 
     pub fn upsert_acled_event(&mut self, ev: AcledEvent) {
         let id = ev.event_id.clone();
+        let d_km = haversine_km(self.station_lat, self.station_lon, ev.lat, ev.lon);
+        if d_km <= 800.0 || ev.fatalities > 0 {
+            let sev = if ev.fatalities > 0 || d_km <= 350.0 {
+                ThreatSeverity::Critical
+            } else {
+                ThreatSeverity::Warning
+            };
+            let msg = format!(
+                "[CATISMA] {}, {} ({}) - {:.0} km",
+                ev.location, ev.country, ev.event_type, d_km
+            );
+            let aid = format!("ACLED:{}", id);
+            self.alerts.upsert_by(
+                AlertItem {
+                    timestamp: chrono::Utc::now(),
+                    domain: "CATISMA".to_string(),
+                    severity: sev,
+                    message: msg,
+                    target_id: Some(aid.clone()),
+                },
+                |a| a.target_id.as_deref() == Some(aid.as_str()),
+            );
+        }
         self.acled_events.upsert_by(ev, |item| item.event_id == id);
     }
 

@@ -494,7 +494,7 @@ fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
             " [F1-F11] Sekme │ [Z] Panel Buyut │ [P] Sekiller │ [Enter/O] Tam Dosya │ [I] Denetci │ [A] AI SITREP "
         }
         ActiveView::Geoint => {
-            " [Surukle/Ok] Gez │ [+/-] Zoom │ [V] Harita Stili │ [P] Platform Sekli │ [I] Denetci │ [W] Web Harita "
+            " [Surukle/WASD/Ok] Gez │ [+/-] Zoom │ [V] Stil │ [P] Sekil │ [I] Denetci │ [Shift+W] Web Harita "
         }
         ActiveView::AirTracks => {
             " [1-6] AOR Filtre │ [Ok/PgUpDn] Sec │ [Enter/O] Foto & Rota Dosya │ [F] Takip │ [B] Izle │ [/] Ara "
@@ -505,9 +505,9 @@ fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
         ActiveView::Sigint => {
             " [S] Ses │ [F] Frekans │ [U] Mod │ [L] Kilit │ [V] WAV │ [T] Tarama │ [X] VOX │ [C] CW │ [N] Sonraki "
         }
-        ActiveView::Satint => " [Ok] Uydu Sec │ [Enter] SGP4 Dosyasi │ [F2] Yer Izi Haritada ",
-        ActiveView::Masint => " [1-3] Sismik / Termal / Uzay & CBRN │ [Ok/Enter] Detay ",
-        ActiveView::Cyberint => " [1-3] Shodan IP │ [Ok/Enter] CVE/IODA Detay ",
+        ActiveView::Satint => " [Ok/PgUpDn] Uydu Sec │ [Enter] SGP4 Dosyasi │ [F2] Yer Izi Haritada ",
+        ActiveView::Masint => " [1-5] Deprem / Termal / CBRN / Catisma / NOTAM │ [Ok/Enter] Detay ",
+        ActiveView::Cyberint => " [IP Yaz+Enter] Hibrit BGP/Port Tara │ [Ok/Ctrl+O] CISA/IODA Detay ",
         ActiveView::Notepad => " [Tab] Arsiv/Editor │ [Ctrl+S] Kaydet │ [Ctrl+N] Yeni │ [Ctrl+H] HTML │ [F5] Zaman ",
         _ => " [F1-F11] Sekme │ [Shift+A] AI SITREP │ [Ctrl+E] Rapor │ [Q] Cikis ",
     };

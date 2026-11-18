@@ -1,6 +1,7 @@
 use crate::geo::{haversine_km, initial_bearing_deg};
 use crate::state::AppState;
-use crate::types::FusionCluster;
+use crate::types::{AlertItem, FusionCluster, ThreatSeverity};
+use chrono::Utc;
 use std::collections::HashMap;
 
 /// K-4: Hava aracının geçmiş izinde dairesel devriye / yakıt ikmal yörüngesi (Orbit/CAP) tespiti
@@ -140,6 +141,56 @@ pub fn recompute_fusion_and_anomalies(state: &mut AppState) {
 
     clusters.sort_by_key(|a| std::cmp::Reverse(a.score));
     clusters.truncate(16);
+
+    // E-3: Yüksek skorlu K-4 füzyon kümeleri ve askeri anomali yörüngeleri için otomatik taktik alarmlar
+    for (tid, tag) in &state.track_anomalies {
+        if tag.contains("ORBIT") || tag.contains("REFUEL") || tag.contains("LOW-FAST") {
+            let cs = state
+                .air_targets
+                .iter()
+                .find(|t| &t.id == tid)
+                .map(|t| t.callsign.clone())
+                .unwrap_or_else(|| tid.clone());
+            let aid = format!("ANOM:{}", tid);
+            let item = AlertItem {
+                timestamp: Utc::now(),
+                domain: "HAVA-ANOMALI".to_string(),
+                severity: ThreatSeverity::Warning,
+                message: format!("[ANOMALI] {} ({}): {}", cs, tid, tag),
+                target_id: Some(aid.clone()),
+            };
+            state
+                .alerts
+                .upsert_by(item, |a| a.target_id.as_deref() == Some(aid.as_str()));
+        }
+    }
+
+    for fc in &clusters {
+        if fc.score >= 70 {
+            let sev = if fc.score >= 100 {
+                ThreatSeverity::Critical
+            } else {
+                ThreatSeverity::Warning
+            };
+            let fid = format!("FUZ:{:.1}:{:.1}", fc.lat, fc.lon);
+            let item = AlertItem {
+                timestamp: Utc::now(),
+                domain: "FUZYON".to_string(),
+                severity: sev,
+                message: format!(
+                    "[FUZYON SKOR:{}] ({}) {}",
+                    fc.score,
+                    fc.domains.join("+"),
+                    fc.summary
+                ),
+                target_id: Some(fid.clone()),
+            };
+            state
+                .alerts
+                .upsert_by(item, |a| a.target_id.as_deref() == Some(fid.as_str()));
+        }
+    }
+
     state.fusion_clusters = clusters;
 }
 
@@ -169,5 +220,53 @@ mod tests {
             (30.5, 41.5),
         ];
         assert!(!is_air_orbit_pattern(&straight));
+    }
+
+    #[test]
+    fn test_auto_alerts_on_conflict_and_fusion_cluster() {
+        let mut st = AppState::new(crate::config::AppConfig::default());
+        st.station_lat = 41.0;
+        st.station_lon = 29.0;
+
+        // Istasyon yakininda (<800 km) GDELT catisma olayi eklendiginde otomatik alarm uretilmeli
+        st.upsert_acled_event(crate::types::AcledEvent {
+            event_id: "GDELT-1".to_string(),
+            event_date: "2026-11-18".to_string(),
+            event_type: "Battles".to_string(),
+            sub_event_type: "CAMEO 190".to_string(),
+            actor1: "ALPHA".to_string(),
+            actor2: Some("BETA".to_string()),
+            location: "Marmara".to_string(),
+            country: "Turkey".to_string(),
+            lat: 40.5,
+            lon: 29.2,
+            fatalities: 1,
+            notes: "Test catisma".to_string(),
+        });
+        assert!(
+            st.alerts.iter().any(|a| a.domain == "CATISMA"),
+            "Yakin/zayiatli GDELT olayi otomatik CATISMA alarmi uretmeli"
+        );
+
+        // Ayni 160km icinde >=2 bagimsiz disiplin (CATISMA + SISMIK) -> Fuzyon skoru >= 70 -> FUZYON alarmi
+        st.upsert_earthquake(crate::types::Earthquake {
+            id: "USGS-1".to_string(),
+            place: "Marmara Test".to_string(),
+            mag: 5.0,
+            depth_km: 10.0,
+            time: Utc::now(),
+            lat: 40.6,
+            lon: 29.3,
+            url: String::new(),
+        });
+        recompute_fusion_and_anomalies(&mut st);
+        assert!(
+            !st.fusion_clusters.is_empty() && st.fusion_clusters[0].score >= 70,
+            "En az >=70 skorlu fuzyon kumesi bekleniyordu"
+        );
+        assert!(
+            st.alerts.iter().any(|a| a.domain == "FUZYON"),
+            "Skor >=70 fuzyon kumesi otomatik FUZYON alarmi uretmeli"
+        );
     }
 }

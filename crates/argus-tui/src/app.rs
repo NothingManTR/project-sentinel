@@ -72,7 +72,7 @@ impl App {
                     if let Some(t) = st.inspected_target().filter(|t| t.id.eq_ignore_ascii_case(&d_icao)) {
                         Self::spawn_flight_schedule(&self.state, &mut st, &t);
                     }
-                } else if !st.is_dialog_open && !matches!(st.selected_domain, 3 | 30 | 50) {
+                } else if !st.is_dialog_open && !matches!(st.selected_domain, 3 | 30 | 50 | 52 | 54 | 55) {
                     if let Some(t) = st.inspected_target().filter(|t| t.domain == Domain::Air) {
                         let icao = t.id.to_lowercase();
                         if self.photo_ctx.last_inspector_icao.as_deref() != Some(&icao) {
@@ -751,6 +751,8 @@ impl App {
                     KeyCode::Char('1') => { st.masint_tab = 0; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
                     KeyCode::Char('2') => { st.masint_tab = 1; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
                     KeyCode::Char('3') => { st.masint_tab = 2; st.radiation_scroll = 0; self.audio.play(SoundEffect::Click); return; }
+                    KeyCode::Char('4') => { st.masint_tab = 3; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
+                    KeyCode::Char('5') => { st.masint_tab = 4; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
                     KeyCode::Up => {
                         if st.masint_tab == 2 {
                             st.radiation_scroll = st.radiation_scroll.saturating_sub(1);
@@ -760,10 +762,40 @@ impl App {
                         return;
                     }
                     KeyCode::Down => {
+                        let max_pos = match st.masint_tab {
+                            1 => st.firms_fires.len().saturating_sub(1),
+                            2 => st.radiation_measurements.len().saturating_sub(1),
+                            3 => st.acled_events.len().saturating_sub(1),
+                            4 => st.airspace_warnings.len().saturating_sub(1),
+                            _ => st.earthquakes.len().saturating_sub(1),
+                        };
                         if st.masint_tab == 2 {
-                            st.radiation_scroll = st.radiation_scroll.saturating_add(1);
+                            st.radiation_scroll = (st.radiation_scroll + 1).min(max_pos);
                         } else {
-                            st.geo_scroll = st.geo_scroll.saturating_add(1);
+                            st.geo_scroll = (st.geo_scroll + 1).min(max_pos);
+                        }
+                        return;
+                    }
+                    KeyCode::PageUp => {
+                        if st.masint_tab == 2 {
+                            st.radiation_scroll = st.radiation_scroll.saturating_sub(10);
+                        } else {
+                            st.geo_scroll = st.geo_scroll.saturating_sub(10);
+                        }
+                        return;
+                    }
+                    KeyCode::PageDown => {
+                        let max_pos = match st.masint_tab {
+                            1 => st.firms_fires.len().saturating_sub(1),
+                            2 => st.radiation_measurements.len().saturating_sub(1),
+                            3 => st.acled_events.len().saturating_sub(1),
+                            4 => st.airspace_warnings.len().saturating_sub(1),
+                            _ => st.earthquakes.len().saturating_sub(1),
+                        };
+                        if st.masint_tab == 2 {
+                            st.radiation_scroll = (st.radiation_scroll + 10).min(max_pos);
+                        } else {
+                            st.geo_scroll = (st.geo_scroll + 10).min(max_pos);
                         }
                         return;
                     }
@@ -771,6 +803,8 @@ impl App {
                         let (dom, idx) = match st.masint_tab {
                             1 => (51, st.geo_scroll),
                             2 => (53, st.radiation_scroll),
+                            3 => (52, st.geo_scroll),
+                            4 => (54, st.geo_scroll),
                             _ => (50, st.geo_scroll),
                         };
                         if Self::open_item_dossier(&mut st, dom, idx) {
@@ -781,13 +815,86 @@ impl App {
                     _ => {}
                 }
             }
+            ActiveView::Satint => {
+                match code {
+                    KeyCode::Esc => {
+                        st.set_view(ActiveView::Dashboard);
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Up => {
+                        st.sat_scroll = st.sat_scroll.saturating_sub(1);
+                        st.selected_domain = 3;
+                        st.selected_row = st.sat_scroll;
+                        return;
+                    }
+                    KeyCode::Down => {
+                        let max_pos = st.satellites.len().saturating_sub(1);
+                        st.sat_scroll = (st.sat_scroll + 1).min(max_pos);
+                        st.selected_domain = 3;
+                        st.selected_row = st.sat_scroll;
+                        return;
+                    }
+                    KeyCode::PageUp => {
+                        st.sat_scroll = st.sat_scroll.saturating_sub(10);
+                        st.selected_domain = 3;
+                        st.selected_row = st.sat_scroll;
+                        return;
+                    }
+                    KeyCode::PageDown => {
+                        let max_pos = st.satellites.len().saturating_sub(1);
+                        st.sat_scroll = (st.sat_scroll + 10).min(max_pos);
+                        st.selected_domain = 3;
+                        st.selected_row = st.sat_scroll;
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        let idx = st.sat_scroll;
+                        if Self::open_item_dossier(&mut st, 3, idx) {
+                            self.audio.play(SoundEffect::Blip);
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             ActiveView::Cyberint => {
                 match code {
+                    KeyCode::Esc => {
+                        st.set_view(ActiveView::Dashboard);
+                        self.audio.play(SoundEffect::Click);
+                        return;
+                    }
+                    KeyCode::Up => {
+                        st.cyber_scroll = st.cyber_scroll.saturating_sub(1);
+                        return;
+                    }
+                    KeyCode::Down => {
+                        let max_pos = st.cyber_incidents.len().saturating_sub(1);
+                        st.cyber_scroll = (st.cyber_scroll + 1).min(max_pos);
+                        return;
+                    }
+                    KeyCode::PageUp => {
+                        st.cyber_scroll = st.cyber_scroll.saturating_sub(10);
+                        return;
+                    }
+                    KeyCode::PageDown => {
+                        let max_pos = st.cyber_incidents.len().saturating_sub(1);
+                        st.cyber_scroll = (st.cyber_scroll + 10).min(max_pos);
+                        return;
+                    }
+                    KeyCode::Char('o') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        let idx = st.cyber_scroll;
+                        if Self::open_item_dossier(&mut st, 4, idx) {
+                            self.audio.play(SoundEffect::Blip);
+                        }
+                        return;
+                    }
                     KeyCode::Enter => {
                         let target = st.shodan_input_ip.trim().to_string();
                         if !target.is_empty() {
                             let api_key = st.config.api_keys.shodan_key.clone();
-                            st.live_status = format!("SHODAN TARANIYOR: {}...", target);
+                            st.live_status = format!("HIBRIT KESIF TARANIYOR: {}...", target);
                             self.audio.play(SoundEffect::Blip);
                             drop(st);
                             let state_clone = Arc::clone(&self.state);
@@ -834,27 +941,27 @@ impl App {
                                         let resolved_ip = info.ip.clone();
                                         lock.shodan_recon_cache.insert(target.clone(), info.clone());
                                         lock.shodan_recon_cache.insert(resolved_ip.clone(), info);
-                                        lock.live_status = format!("SHODAN TAMAMLANDI: {}", resolved_ip);
+                                        lock.live_status = format!("KESIF TAMAMLANDI: {}", resolved_ip);
                                         lock.open_dialog(
-                                            format!("Shodan Host Recon: {} ({})", target, resolved_ip),
+                                            format!("Hibrit Host Recon: {} ({})", target, resolved_ip),
                                             vec![
-                                                format!("=== SHODAN INTERNETDB & GEOIP KESIF RAPORU: {} ===", target),
+                                                format!("=== HIBRIT SIBER, RIPE BGP & CANLI PORT KESIF RAPORU: {} ===", target),
                                                 format!("Cozumlenen Hedef IP  : {}", resolved_ip),
                                                 format!("Host / Alan Adlari   : {}", hostnames_str),
                                                 format!("ISP / Operator (ASN) : {}", isp_str),
                                                 format!("Cografi Konum        : {}", loc_str),
                                                 format!("Acik Portlar         : {}", ports_str),
-                                                format!("Sistem Etiketleri    : {}", tags_str),
-                                                format!("CPE Servisleri       : {}", cpes_str),
+                                                format!("BGP / Ag Etiketleri  : {}", tags_str),
+                                                format!("Servis Banner / CPE  : {}", cpes_str),
                                                 format!("Zafiyetler (CVE)     : {}", vulns_str),
                                             ],
                                         );
                                     }
                                     Err(e) => {
                                         let mut lock = state_clone.write();
-                                        lock.live_status = format!("SHODAN HATA: {}", target);
+                                        lock.live_status = format!("KESIF HATA: {}", target);
                                         lock.open_dialog(
-                                            format!("Shodan Sorgu Hatasi: {}", target),
+                                            format!("Host Sorgu Hatasi: {}", target),
                                             vec![
                                                 format!("Hedef sorgulanamadi: {}", target),
                                                 format!("Hata detayi: {}", e),
@@ -882,6 +989,10 @@ impl App {
 
         // 5. Genel Gezinme ve Kontroller
         match code {
+            KeyCode::Esc if st.active_view == ActiveView::Dashboard && st.zoomed_tile.is_some() => {
+                st.zoomed_tile = None;
+                self.audio.play(SoundEffect::Click);
+            }
             KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
             KeyCode::Char('f') | KeyCode::Char('F')
                 if matches!(
@@ -926,7 +1037,11 @@ impl App {
                 st.sync_air_selection();
                 self.audio.play(SoundEffect::Click);
             }
-            KeyCode::Char('d') | KeyCode::Char('D') => {
+            KeyCode::Char('D') => {
+                st.set_view(ActiveView::SeaTracks);
+                self.audio.play(SoundEffect::Click);
+            }
+            KeyCode::Char('d') if !matches!(st.active_view, ActiveView::Dashboard | ActiveView::Geoint) => {
                 st.set_view(ActiveView::SeaTracks);
                 self.audio.play(SoundEffect::Click);
             }
@@ -986,7 +1101,7 @@ impl App {
                 Self::focus_selected_on_map(&mut st);
                 self.audio.play(SoundEffect::Blip);
             }
-            KeyCode::Char('w') | KeyCode::Char('W') if st.active_view != ActiveView::Geoint => {
+            KeyCode::Char('W') => {
                 Self::launch_web_map(&mut st);
                 self.audio.play(SoundEffect::Blip);
             }
@@ -1002,41 +1117,68 @@ impl App {
                 Self::spawn_ai_sitrep(&self.state, &mut st, false);
                 self.audio.play(SoundEffect::Blip);
             }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
+            KeyCode::Char('+') | KeyCode::Char('=')
+                if matches!(st.active_view, ActiveView::Dashboard | ActiveView::Geoint) =>
+            {
                 st.map_zoom = (st.map_zoom * 1.25).min(50.0);
             }
-            KeyCode::Char('-') | KeyCode::Char('_') => {
+            KeyCode::Char('-') | KeyCode::Char('_')
+                if matches!(st.active_view, ActiveView::Dashboard | ActiveView::Geoint) =>
+            {
                 st.map_zoom = (st.map_zoom / 1.25).max(0.25);
             }
-            KeyCode::Left | KeyCode::Char('a') => {
+            KeyCode::Left | KeyCode::Char('a')
+                if matches!(st.active_view, ActiveView::Dashboard | ActiveView::Geoint) =>
+            {
                 st.map_center_lon = (st.map_center_lon - 5.0 / st.map_zoom).clamp(-180.0, 180.0);
             }
-            KeyCode::Right | KeyCode::Char('s') if st.active_view != ActiveView::Sigint => {
+            KeyCode::Right | KeyCode::Char('d')
+                if matches!(st.active_view, ActiveView::Dashboard | ActiveView::Geoint) =>
+            {
                 st.map_center_lon = (st.map_center_lon + 5.0 / st.map_zoom).clamp(-180.0, 180.0);
             }
-            KeyCode::Up | KeyCode::Char('w') => {
+            KeyCode::Up | KeyCode::Char('w')
+                if matches!(st.active_view, ActiveView::Dashboard | ActiveView::Geoint) =>
+            {
                 st.map_center_lat = (st.map_center_lat + 2.5 / st.map_zoom).clamp(-85.0, 85.0);
             }
-            KeyCode::Down if st.active_view != ActiveView::Sigint => {
+            KeyCode::Down | KeyCode::Char('s')
+                if matches!(st.active_view, ActiveView::Dashboard | ActiveView::Geoint) =>
+            {
                 st.map_center_lat = (st.map_center_lat - 2.5 / st.map_zoom).clamp(-85.0, 85.0);
             }
             KeyCode::Char('o') | KeyCode::Char('O') => {
-                if let Some(t) = st.inspected_target().filter(|t| t.domain == Domain::Air) {
-                    Self::open_air_target_dossier(&mut st, &t);
-                    self.audio.play(SoundEffect::Blip);
+                let dom = st.selected_domain;
+                let row = st.selected_row;
+                if matches!(dom, 3 | 30 | 50 | 52 | 54 | 55) {
+                    if Self::open_item_dossier(&mut st, dom, row) {
+                        self.audio.play(SoundEffect::Blip);
+                    }
+                } else if let Some(t) = st.inspected_target() {
+                    if t.domain == Domain::Air {
+                        Self::open_air_target_dossier(&mut st, &t);
+                        self.audio.play(SoundEffect::Blip);
+                    } else {
+                        let pos_opt = st.targets.iter().position(|x| x.id == t.id);
+                        if let Some(pos) = pos_opt {
+                            if Self::open_item_dossier(&mut st, 2, pos) {
+                                self.audio.play(SoundEffect::Blip);
+                            }
+                        }
+                    }
                 }
             }
             KeyCode::Enter => {
                 let active = st.active_tile;
-                let row_idx = match active {
-                    1 => st.news_scroll,
-                    2 => st.target_scroll,
-                    3 => st.sat_scroll,
-                    4 => st.cyber_scroll,
-                    5 => st.geo_scroll,
-                    _ => 0,
+                let (dom, row_idx) = match active {
+                    1 => (1, st.news_scroll),
+                    2 => (2, st.target_scroll),
+                    3 => (3, st.sat_scroll),
+                    4 => (30, st.eam_scroll),
+                    5 => (5, st.geo_scroll),
+                    _ => (active, 0),
                 };
-                if Self::open_item_dossier(&mut st, active, row_idx) {
+                if Self::open_item_dossier(&mut st, dom, row_idx) {
                     self.audio.play(SoundEffect::Blip);
                 }
             }
@@ -2097,6 +2239,57 @@ impl App {
                     return true;
                 }
             }
+            54 => {
+                if let Some(aw) = st.airspace_warnings.get(row_idx) {
+                    let fl_str = aw
+                        .top_fl
+                        .map(|f| format!("FL{} ({} ft)", f, f * 100))
+                        .unwrap_or_else(|| "SFC - UNL".to_string());
+                    let poly_pts = if aw.polygon.is_empty() {
+                        "Yok".to_string()
+                    } else {
+                        aw.polygon
+                            .iter()
+                            .take(6)
+                            .map(|(lon, lat)| format!("{:.2}N/{:.2}E", lat, lon))
+                            .collect::<Vec<_>>()
+                            .join(" -> ")
+                    };
+                    st.open_dialog(
+                        format!("N-DOSSIER: {} [{}]", aw.kind, aw.fir_or_zone),
+                        vec![
+                            "=== CANLI HAVA SAHASI NOTAM / SIGMET / EW UYARISI ===".to_string(),
+                            format!("Kayit Kimligi         : {}", aw.id),
+                            format!("Uyari Sinifi          : {}", aw.kind),
+                            format!("FIR / Sorumluluk Alani: {}", aw.fir_or_zone),
+                            format!("Tehlike Turu          : {}", aw.hazard),
+                            format!("Ust Irtifa Tavani     : {}", fl_str),
+                            format!("Merkez Koordinat      : {:.3}° N, {:.3}° E", aw.center_lat, aw.center_lon),
+                            format!("Cokgen Kose Noktalari : {}", poly_pts),
+                            "--- TAM UYARI & KORIDOR METNI ---".to_string(),
+                            aw.summary.clone(),
+                        ],
+                    );
+                    return true;
+                }
+            }
+            55 => {
+                if let Some(fc) = st.fusion_clusters.get(row_idx) {
+                    st.open_dialog(
+                        format!("K4-FUZYON: SKOR {} [{}]", fc.score, fc.domains.join("+")),
+                        vec![
+                            "=== K-4 COKLU-SENSOR KORELASYON & KRIZ KUMESI ===".to_string(),
+                            format!("Tehdit Füzyon Skoru   : {}/100+", fc.score),
+                            format!("Merkez Koordinatlar   : {:.4}° N, {:.4}° E (160 km yaricap)", fc.lat, fc.lon),
+                            format!("Aktif İstihbarat Alani: {}", fc.domains.join(" │ ")),
+                            "--- KORELASYON KANIT OZETI ---".to_string(),
+                            fc.summary.clone(),
+                            "Degerlendirme         : Ayni 160 km yaricapli sahada birden fazla bagimsiz istihbarat alaninda eszamanli hareketlilik tespit edilmistir.".to_string(),
+                        ],
+                    );
+                    return true;
+                }
+            }
             5 => {
                 let q_len = st.earthquakes.len();
                 let f_len = st.firms_fires.len();
@@ -2323,15 +2516,16 @@ impl App {
                 "> [F4] DENIZ (D) : Canli AIS Deniz Filosu, Savas Gemileri & Bogazlar".to_string(),
                 "> [F5] SIGINT    : Canli KiwiSDR WebSocket (/SND) HF Alicisi & EAM".to_string(),
                 "> [F6] OSINT     : Kriz & Istihbarat Haber Bulteni".to_string(),
-                "> [F7] SIBER     : Shodan InternetDB Host Tarayici, CISA KEV & IODA".to_string(),
-                "> [F8] UYDU      : CelesTrak GP SGP4 Uydu Polar Radar Skobu & Gecisler".to_string(),
-                "> [F9] AFET      : USGS/Kandilli Deprem, NASA FIRMS Termal & Safecast".to_string(),
+                "> [F7] SIBER     : Hibrit Kesif (Shodan + RIPE BGP + 16-Port Tarama), CISA & IODA".to_string(),
+                "> [F8] UYDU      : CelesTrak GP SGP4 Uydu Polar Radar Skobu & Gecisler (Ok/Enter)".to_string(),
+                "> [F9] AFET/KRIZ : Deprem, FIRMS Termal, Safecast CBRN, GDELT Catisma & NOTAM [1-5]".to_string(),
                 "> [F10/F11]      : Notlar & AI Rapor Arsivi (Tab/Ok/Ctrl+N/Ctrl+S) / Hesap".to_string(),
                 "--- 2. SAG DENETCI PANELI VE HARITA KONTROLLERI ---".to_string(),
                 "> [Tek Tik]      : Tablo veya haritadaki hedefi Sag Denetci Panelinde inceler".to_string(),
                 "> [Cift Tik/Ent] : Hedefin tam ekran dosyasini acar".to_string(),
                 "> [I] Tusu       : Sag Kalici Denetci Panelini goster/gizle".to_string(),
-                "> [W] veya [WEB] : http://127.0.0.1:8090 uzerinde canli Leaflet haritasini acar".to_string(),
+                "> [Shift+W / WEB]: http://127.0.0.1:8090 uzerinde canli Leaflet haritasini acar".to_string(),
+                "> [WASD / Oklar] : F1/F2 haritasini kaydirir | [1-6 + Z/Esc]: Paneli tam ekran buyut".to_string(),
                 "> [G / F / B]    : Haritada Odakla (G) | Takip Kilidi (F) | Izleme Listesi (B)".to_string(),
                 "> [ :Ntm]        : NOTAM / SIGMET / GPS-JAM Hava Sahasi Cokgen Katmani".to_string(),
                 "--- 3. GEMINI AI ANALIZ & DOSYA KAYIT KISAYOLLARI ---".to_string(),
