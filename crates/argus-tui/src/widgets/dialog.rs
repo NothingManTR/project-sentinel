@@ -16,10 +16,11 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
     }
 
     let has_photo = state.dialog_aircraft_icao.is_some();
+    let is_ai_dialog = state.dialog_title.contains("GEMINI AI");
     let is_long_report = state.dialog_content.len() > 14;
     let max_w = if has_photo {
         114
-    } else if is_long_report {
+    } else if is_long_report || is_ai_dialog {
         116
     } else {
         86
@@ -98,7 +99,6 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
         .style(Style::default().bg(BG_PRIMARY));
     frame.render_widget(content_block, content_area);
 
-    let is_ai_dialog = state.dialog_title.contains("GEMINI AI");
     let top_reserve = if is_ai_dialog {
         if state.ai_prompt_input_active { 2 } else { 1 }
     } else {
@@ -124,18 +124,20 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
             ("[2:Secili Hedef]", 1),
             ("[3:Bolgesel Kriz]", 2),
             ("[4:Ozel Soru]", 3),
+            ("[5:KirmiziHucre]", 4),
         ];
         let mut mx = mode_row.x;
         let mut spans = Vec::new();
         for (lbl, mid) in modes {
             let w = lbl.chars().count() as u16;
-            if mx + w + 1 < mode_row.x + mode_row.width.saturating_sub(11) {
+            if mx + w < mode_row.x + mode_row.width.saturating_sub(11) {
                 let active = state.ai_mode == mid;
+                let accent = if mid == 4 { TELETEXT_RED } else { TELETEXT_CYAN };
                 spans.push(Span::styled(
                     lbl,
                     Style::default()
-                        .fg(if active { TELETEXT_BLACK } else { TELETEXT_CYAN })
-                        .bg(if active { TELETEXT_CYAN } else { BG_SURFACE })
+                        .fg(if active { TELETEXT_BLACK } else { accent })
+                        .bg(if active { accent } else { BG_SURFACE })
                         .add_modifier(Modifier::BOLD),
                 ));
                 spans.push(Span::raw(" "));

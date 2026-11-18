@@ -50,7 +50,7 @@ pub fn render_air_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // HUD Taktik Ozet Kartlari
+            Constraint::Length(4), // HUD Taktik Ozet Kartlari (Baslik + Deger)
             Constraint::Min(6),    // Ana Radar Tablosu
         ])
         .split(left_area);
@@ -76,32 +76,50 @@ pub fn render_air_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
         .filter(|t| matches!(t.squawk.as_deref(), Some("7700") | Some("7600") | Some("7500")))
         .count();
 
+    let aar_count = state.aar_pairs.len();
+    let aar_val = if let Some(pair) = state.aar_pairs.first() {
+        let cs: String = pair.tanker_callsign.chars().take(7).collect();
+        if pair.is_locked {
+            format!("{} Paket [KILIT]", aar_count)
+        } else {
+            format!("{} Paket ({})", aar_count, cs)
+        }
+    } else {
+        "0 Ikmal Paketi".to_string()
+    };
+
     // 2. HUD Özet Kartları
     let hud_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(22),
+            Constraint::Percentage(20),
+            Constraint::Percentage(16),
+            Constraint::Percentage(22),
+            Constraint::Percentage(20),
         ])
         .split(hud_bar);
 
     let hud_items = [
         (
             "KURESEL ADS-B",
-            format!("{} Iz / {} Askeri", all_count, mil_count),
+            format!("{} Iz / {} Ask", all_count, mil_count),
             TELETEXT_CYAN,
         ),
         (
             "CENTCOM AOR",
-            format!("{} Iz / {} Askeri", cent_count, cent_mil),
+            format!("{} Iz / {} Ask", cent_count, cent_mil),
             if cent_mil > 0 { TELETEXT_RED } else { FG_SECONDARY },
         ),
         (
-            "ACIL DURUM",
-            format!("{} Squawk 7x00", emg_count),
+            "ACIL 7x00",
+            format!("{} Squawk", emg_count),
             if emg_count > 0 { TELETEXT_RED } else { TELETEXT_GREEN },
+        ),
+        (
+            "AAR IKMAL PAKETI",
+            aar_val,
+            if aar_count > 0 { TELETEXT_YELLOW } else { FG_SECONDARY },
         ),
         (
             "AKTIF FILTRE",

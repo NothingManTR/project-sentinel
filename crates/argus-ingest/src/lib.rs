@@ -149,17 +149,20 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
         });
     }
 
-    // 4. Çatışma ve Askeri Olaylar Görevi (ACLED birincil + Anahtarsız GDELT v2 15-dk CAMEO yedeği)
+    // 4. Çatışma ve Askeri Olaylar Görevi (ACLED birincil + Anahtarsız GDELT v2 15-dk CAMEO yedeği + EVI)
     {
         let client = acled::AcledClient::new(cfg.acled.email.clone(), cfg.acled.password.clone());
         let st = Arc::clone(&state);
         tokio::spawn(async move {
             loop {
-                if let Ok(events) = client.fetch_recent_conflicts().await {
+                if let Ok((events, metrics)) = client.fetch_recent_conflicts_with_metrics().await {
                     let mut lock = st.write();
                     for ev in events {
                         lock.upsert_acled_event(ev);
                         lock.total_events_received += 1;
+                    }
+                    if !metrics.is_empty() {
+                        lock.escalation_metrics = metrics;
                     }
                 }
                 sleep(Duration::from_secs(180)).await;
@@ -181,7 +184,7 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                     let mut lock = st.write();
                     lock.satellites = sats;
                 }
-                sleep(Duration::from_secs(3)).await;
+                sleep(Duration::from_secs(15)).await;
             }
         });
     }

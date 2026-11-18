@@ -28,7 +28,7 @@ pub fn render_osint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // 3'lu Taktik HUD Ozet Kartlari
+            Constraint::Length(4), // 3'lu Taktik HUD Ozet Kartlari
             Constraint::Length(3), // Tiklanabilir Sekme & Filtre Cubugu
             Constraint::Min(8),    // Ana Tablo (Ajans Haberleri veya GDELT/ACLED Catisma)
         ])
@@ -78,27 +78,54 @@ fn render_osint_hud(frame: &mut Frame, area: Rect, state: &mut AppState) {
         ("Canli Ajans Haberleri", TELETEXT_YELLOW)
     };
 
+    let (evi_str, evi_col) = if let Some(top) = state.escalation_metrics.iter().max_by_key(|m| m.evi_score) {
+        let col = if top.evi_score >= 70 || top.delta_pct >= 30 {
+            TELETEXT_RED
+        } else if top.evi_score >= 40 {
+            TELETEXT_YELLOW
+        } else {
+            TELETEXT_GREEN
+        };
+        (
+            format!("{} EVI:{} ({:+}%)", top.country_code, top.evi_score, top.delta_pct),
+            col,
+        )
+    } else {
+        ("EVI: Hesaplaniyor...".to_string(), FG_MUTED)
+    };
+
     let cards = [
         (
             "KURESEL AJANS AKISI",
-            format!("{} Haber Bulteni (BBC/DefNews/AJ)", state.news.len()),
+            format!("{} Haber Bulteni", state.news.len()),
             TELETEXT_CYAN,
+            "BBC / DefNews / AJ".to_string(),
+            FG_SECONDARY,
             BORDER_DIM,
         ),
         (
             "SAHA CATISMA / GDELT",
-            format!("{} Kinetik Catisma [5: Ac]", state.acled_events.len()),
+            format!("{} Kinetik Catisma", state.acled_events.len()),
             TELETEXT_RED,
+            "[5: Catisma Tablosu]".to_string(),
+            FG_SECONDARY,
             if state.news_filter == 5 {
                 TELETEXT_RED
             } else {
                 BORDER_DIM
             },
         ),
-        ("AKTIF MOD", mode_val.to_string(), mode_col, BORDER_DIM),
+        (
+            "AKTIF MOD & EVI",
+            mode_val.to_string(),
+            mode_col,
+            evi_str,
+            evi_col,
+            BORDER_DIM,
+        ),
     ];
 
-    for (idx, (title, val, fg_col, border_col)) in cards.iter().enumerate() {
+    for (idx, (title, val, fg_col, sub_val, sub_col, border_col)) in cards.iter().enumerate() {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -108,10 +135,16 @@ fn render_osint_hud(frame: &mut Frame, area: Rect, state: &mut AppState) {
         let inner = block.inner(hud_cols[idx]);
         frame.render_widget(block, hud_cols[idx]);
 
-        let p = Paragraph::new(Line::from(Span::styled(
-            val.as_str(),
-            Style::default().fg(*fg_col).add_modifier(Modifier::BOLD),
-        )));
+        let p = Paragraph::new(vec![
+            Line::from(Span::styled(
+                val.as_str(),
+                Style::default().fg(*fg_col).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                sub_val.as_str(),
+                Style::default().fg(*sub_col).add_modifier(Modifier::BOLD),
+            )),
+        ]);
         frame.render_widget(p, inner);
     }
 

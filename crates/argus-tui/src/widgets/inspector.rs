@@ -1,4 +1,6 @@
-use argus_core::geo::{bearing_sector_tr, haversine_km, haversine_nm, initial_bearing_deg};
+use argus_core::geo::{
+    bearing_sector_tr, haversine_km, haversine_nm, initial_bearing_deg, radar_horizon_km,
+};
 use argus_core::mouse::HitTarget;
 use argus_core::state::AppState;
 use argus_core::theme::*;
@@ -121,8 +123,8 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(11),   // Secili Hedef / Kayit Teknik Telemetrisi + Foto
-            Constraint::Length(3), // Kompakt Tek Satir Operasyonel Komut Seridi
+            Constraint::Min(9),    // Secili Hedef / Kayit Teknik Telemetrisi + Foto
+            Constraint::Length(4), // 2 Satir Operasyonel Komut + Taktik Cetvel Seridi
             Constraint::Length(7), // Canli Alarm & Izleme Listesi (Watchlist) Ozeti
         ])
         .split(area);
@@ -528,6 +530,38 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
                     Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
                 ),
             ]));
+            let alt_m = t.geo.alt_m.unwrap_or(0.0).max(0.0);
+            let los_km = radar_horizon_km(30.0, alt_m);
+            let in_los = d_km <= los_km;
+            lines.push(Line::from(vec![
+                Span::styled("Radar LOS   : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    format!(
+                        "{:.0} km ({})",
+                        los_km,
+                        if in_los { "GORUS ICI" } else { "UFUK ALTI" }
+                    ),
+                    Style::default().fg(if in_los { TELETEXT_GREEN } else { TELETEXT_RED }),
+                ),
+            ]));
+            let fmt_eta = |speed_kmh: f64| -> String {
+                let mins = (d_km / speed_kmh) * 60.0;
+                if mins < 1.0 {
+                    format!("{:.0}sn", (mins * 60.0).round())
+                } else if mins < 60.0 {
+                    format!("{:.1}dk", mins)
+                } else {
+                    let total = mins.round() as u64;
+                    format!("{}s{:02}d", total / 60, total % 60)
+                }
+            };
+            lines.push(Line::from(vec![
+                Span::styled("Mach ETA    : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    format!("M0.85:{} | M1.6:{}", fmt_eta(903.0), fmt_eta(1700.0)),
+                    Style::default().fg(TELETEXT_CYAN),
+                ),
+            ]));
             if let Some(alt) = t.geo.alt_m {
                 lines.push(Line::from(vec![
                     Span::styled("Irtifa      : ", Style::default().fg(FG_SECONDARY)),
@@ -661,7 +695,7 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), detail_inner);
     }
 
-    // 2. Kompakt Tek Satir Operasyonel Komut Butonlari (Tiklanabilir)
+    // 2. Operasyonel Komut & Taktik Cetvel Butonlari (2 Satir, Tiklanabilir)
     let act_pills = [
         ("[G:Odak]", HitTarget::InspectorAction(0), TELETEXT_CYAN),
         ("[F:Takip]", HitTarget::InspectorAction(1), TELETEXT_GREEN),
@@ -689,7 +723,66 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
         }
     }
 
-    let act_p = Paragraph::new(Line::from(pill_spans)).block(
+    let mut cmd_lines = vec![Line::from(pill_spans)];
+    if chunks[1].height >= 4 {
+        let has_pin_a = state.tactical_ruler.is_some();
+        let has_pin_b = state
+            .tactical_ruler
+            .as_ref()
+            .is_some_and(|r| r.pin_b.is_some());
+        let ring_km = state
+            .tactical_ruler
+            .as_ref()
+            .and_then(|r| r.threat_ring_km);
+        let ruler_pills = [
+            (
+                "[PinA]",
+                HitTarget::RulerSetPinA,
+                if has_pin_a { TELETEXT_BLACK } else { TELETEXT_YELLOW },
+                if has_pin_a { TELETEXT_YELLOW } else { BG_SURFACE },
+            ),
+            (
+                "[PinB]",
+                HitTarget::RulerSetPinB,
+                if has_pin_b { TELETEXT_BLACK } else { TELETEXT_CYAN },
+                if has_pin_b { TELETEXT_CYAN } else { BG_SURFACE },
+            ),
+            (
+                "[Halka]",
+                HitTarget::RulerCycleRing,
+                if ring_km.is_some() { TELETEXT_BLACK } else { TELETEXT_RED },
+                if ring_km.is_some() { TELETEXT_RED } else { BG_SURFACE },
+            ),
+            ("[Sifir]", HitTarget::RulerClear, FG_SECONDARY, BG_SURFACE),
+        ];
+        let mut r_spans = Vec::new();
+        let mut rx = chunks[1].x + 1;
+        let ry = chunks[1].y + 2;
+        for (lbl, target, fg, bg) in ruler_pills {
+            let pw = lbl.chars().count() as u16;
+            if rx + pw <= max_x {
+                r_spans.push(Span::styled(
+                    lbl,
+                    Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+                ));
+                r_spans.push(Span::raw(" "));
+                state.hit_tester.register(
+                    Rect { x: rx, y: ry, width: pw, height: 1 },
+                    target,
+                );
+                rx += pw + 1;
+            }
+        }
+        if let Some(rk) = ring_km {
+            let rtag = format!("{:.0}k", rk);
+            if rx + (rtag.chars().count() as u16) <= max_x {
+                r_spans.push(Span::styled(rtag, Style::default().fg(TELETEXT_RED)));
+            }
+        }
+        cmd_lines.push(Line::from(r_spans));
+    }
+
+    let act_p = Paragraph::new(cmd_lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_DIM))

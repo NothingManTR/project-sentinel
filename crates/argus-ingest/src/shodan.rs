@@ -92,12 +92,13 @@ impl ShodanClient {
             ..Default::default()
         };
 
-        // Katman 1..4 ayni anda paralel calisir (toplam ~1.5 - 3 sn)
-        let (idb_res, ripe_res, tcp_res, geo_res) = tokio::join!(
+        // Katman 1..5 ayni anda paralel calisir (toplam ~1.5 - 3.5 sn)
+        let (idb_res, ripe_res, tcp_res, geo_res, crt_subs) = tokio::join!(
             self.fetch_internetdb(&ip),
             self.fetch_ripe_stat(&ip),
             Self::scan_live_ports(&ip, target),
             self.fetch_geoip(&ip),
+            self.fetch_crt_subdomains(target),
         );
 
         // Katman 1: Shodan InternetDB (erisim varsa)
@@ -111,6 +112,27 @@ impl ShodanClient {
 
         if is_domain && !target.is_empty() && !info.hostnames.iter().any(|h| h == target) {
             info.hostnames.push(target.to_string());
+        }
+
+        // Katman 5: crt.sh Pasif Alt-Alan Adi Kesfi (yalnizca domain hedefleri icin)
+        if !crt_subs.is_empty() {
+            info.subdomains = crt_subs;
+            let mut added = 0usize;
+            for sub in &info.subdomains {
+                if added >= 5 {
+                    break;
+                }
+                if !info.hostnames.iter().any(|h| h.eq_ignore_ascii_case(sub)) {
+                    info.hostnames.push(sub.clone());
+                    added += 1;
+                }
+            }
+            if info.subdomains.len() > added {
+                info.hostnames.push(format!(
+                    "crt.sh:+{} alt-alan",
+                    info.subdomains.len() - added
+                ));
+            }
         }
 
         // Katman 2: RIPE Stat BGP Prefix & ASN (anahtarsiz / engelsiz)
@@ -448,11 +470,120 @@ impl ShodanClient {
         }
         None
     }
+
+    /// Katman 5: crt.sh sertifika seffafligi (CT logs) uzerinden pasif alt-alan adi kesfi (3.5 sn timeout)
+    pub async fn fetch_crt_subdomains(&self, target: &str) -> Vec<String> {
+        let clean = target.trim();
+        if clean.is_empty()
+            || clean.parse::<IpAddr>().is_ok()
+            || !clean.contains('.')
+            || !clean
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        {
+            return Vec::new();
+        }
+
+        let url = format!("https://crt.sh/?q=%25.{}&output=json", clean);
+        let fut = async {
+            let resp = self.client.get(&url).send().await.ok()?;
+            if !resp.status().is_success() {
+                return None;
+            }
+            resp.text().await.ok()
+        };
+
+        let Some(body) = tokio::time::timeout(Duration::from_millis(3500), fut)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return Vec::new();
+        };
+
+        parse_crt_sh_json(&body, clean)
+    }
+}
+
+/// crt.sh JSON yanitindan benzersiz alt-alan adlarini (maks 25) ayiklar
+pub fn parse_crt_sh_json(raw: &str, domain: &str) -> Vec<String> {
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    let domain_lower = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    if domain_lower.is_empty() {
+        return Vec::new();
+    }
+    let suffix = format!(".{}", domain_lower);
+    let mut unique = BTreeSet::new();
+
+    for item in items {
+        let mut push_cand = |raw_c: &str| {
+            let cand = raw_c
+                .trim()
+                .trim_start_matches("*.")
+                .trim_end_matches('.')
+                .to_ascii_lowercase();
+            if !cand.is_empty()
+                && !cand.starts_with('.')
+                && cand != domain_lower
+                && cand.ends_with(&suffix)
+                && !cand.contains('*')
+                && !cand.contains(' ')
+            {
+                unique.insert(cand);
+            }
+        };
+
+        if let Some(nv) = item["name_value"].as_str() {
+            for part in nv.split(['\n', ',']) {
+                push_cand(part);
+            }
+        }
+        if let Some(cn) = item["common_name"].as_str() {
+            push_cand(cn);
+        }
+        if unique.len() >= 25 {
+            break;
+        }
+    }
+
+    unique.into_iter().take(25).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_crt_sh_json_extracts_unique_subdomains_capped_at_25() {
+        let sample = r#"[
+            {"common_name": "example.com", "name_value": "*.api.example.com\napi.example.com\nmail.example.com"},
+            {"common_name": "vpn.example.com", "name_value": "vpn.example.com\notherdomain.org"}
+        ]"#;
+        let subs = parse_crt_sh_json(sample, "example.com");
+        assert_eq!(
+            subs,
+            vec![
+                "api.example.com".to_string(),
+                "mail.example.com".to_string(),
+                "vpn.example.com".to_string(),
+            ]
+        );
+
+        let many: Vec<serde_json::Value> = (0..40)
+            .map(|i| serde_json::json!({"name_value": format!("sub{:02}.example.com", i)}))
+            .collect();
+        let capped = parse_crt_sh_json(&serde_json::Value::Array(many).to_string(), "example.com");
+        assert_eq!(capped.len(), 25);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_crt_subdomains_skips_ip() {
+        let client = ShodanClient::new(None);
+        assert!(client.fetch_crt_subdomains("1.1.1.1").await.is_empty());
+        assert!(client.fetch_crt_subdomains("2001:4860:4860::8888").await.is_empty());
+    }
 
     #[tokio::test]
     #[ignore = "requires live network access"]

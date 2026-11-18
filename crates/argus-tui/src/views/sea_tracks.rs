@@ -50,13 +50,15 @@ pub fn render_sea_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Taktik HUD Ozet Kartlari
+            Constraint::Length(4), // Taktik HUD Ozet Kartlari (Baslik + Deger)
+            Constraint::Length(1), // 6-Bogaz Gatekeeper + Dark-Ship Seridi
             Constraint::Min(6),    // Ana Donanma Tablosu
         ])
         .split(left_area);
 
     let hud_bar = main_layout[0];
-    let table_area = main_layout[1];
+    let gate_bar = main_layout[1];
+    let table_area = main_layout[2];
 
     let all_vessels = state.sea_targets.iter().count();
     let warship_count = state
@@ -127,6 +129,87 @@ pub fn render_sea_tracks_view(frame: &mut Frame, area: Rect, state: &mut AppStat
             )),
         ]);
         frame.render_widget(p, card_inner);
+    }
+
+    // 1.5 6-Bogaz Gatekeeper & Dark-Ship Seridi
+    {
+        let dark_cnt = state.dark_ships.len();
+        let dark_lbl = format!("[DARK-SHIP:{}]", dark_cnt);
+        let dark_w = dark_lbl.chars().count() as u16;
+        let prefix = " BOGAZ:";
+        let prefix_w = prefix.chars().count() as u16;
+
+        let mut gate_spans = vec![Span::styled(
+            prefix,
+            Style::default().fg(TELETEXT_CYAN).bg(BG_SURFACE).add_modifier(Modifier::BOLD),
+        )];
+        let mut gx = gate_bar.x + prefix_w;
+        let max_gate_x = gate_bar.x + gate_bar.width.saturating_sub(dark_w + 1);
+
+        if state.strait_gates.is_empty() {
+            let wait_lbl = " Kapilar hazirlaniyor...";
+            let ww = wait_lbl.chars().count() as u16;
+            if gx + ww <= max_gate_x {
+                gate_spans.push(Span::styled(wait_lbl, Style::default().fg(FG_MUTED).bg(BG_SURFACE)));
+                gx += ww;
+            }
+        } else {
+            let gates: Vec<_> = state
+                .strait_gates
+                .iter()
+                .enumerate()
+                .map(|(idx, g)| {
+                    let code: String = g.id.chars().take(3).collect::<String>().to_uppercase();
+                    let badge = format!("[{}:{}/{}]", code, g.fwd_count, g.rev_count);
+                    let fg = if g.mil_count > 0 {
+                        TELETEXT_RED
+                    } else if g.fwd_count + g.rev_count > 0 {
+                        TELETEXT_GREEN
+                    } else {
+                        FG_SECONDARY
+                    };
+                    (idx, badge, fg)
+                })
+                .collect();
+
+            for (idx, badge, fg) in gates {
+                let bw = badge.chars().count() as u16;
+                if gx + 1 + bw <= max_gate_x {
+                    gate_spans.push(Span::styled(" ", Style::default().bg(BG_SURFACE)));
+                    gx += 1;
+                    gate_spans.push(Span::styled(
+                        badge,
+                        Style::default().fg(fg).bg(BG_PANEL).add_modifier(Modifier::BOLD),
+                    ));
+                    state.hit_tester.register(
+                        Rect { x: gx, y: gate_bar.y, width: bw, height: 1 },
+                        HitTarget::StraitGate(idx),
+                    );
+                    gx += bw;
+                }
+            }
+        }
+
+        let end_x = gate_bar.x + gate_bar.width;
+        if end_x >= gx + dark_w {
+            let pad = (end_x - gx - dark_w) as usize;
+            if pad > 0 {
+                gate_spans.push(Span::styled(" ".repeat(pad), Style::default().bg(BG_SURFACE)));
+            }
+            gate_spans.push(Span::styled(
+                dark_lbl,
+                if dark_cnt > 0 {
+                    Style::default().fg(TELETEXT_WHITE).bg(TELETEXT_RED).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(FG_SECONDARY).bg(BG_SURFACE).add_modifier(Modifier::BOLD)
+                },
+            ));
+        }
+
+        frame.render_widget(
+            Paragraph::new(Line::from(gate_spans)).style(Style::default().bg(BG_SURFACE)),
+            gate_bar,
+        );
     }
 
     state.ensure_sea_indices();

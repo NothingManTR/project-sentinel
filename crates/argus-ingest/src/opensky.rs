@@ -457,7 +457,7 @@ impl OpenSkyClient {
             } else {
                 None
             };
-            let info = if let Some(ref r) = route_str {
+            let mut info = if let Some(ref r) = route_str {
                 format!(
                     "[{}] {} | FL{:.0} | SQWK: {}",
                     theater,
@@ -473,6 +473,12 @@ impl OpenSkyClient {
                     sqwk_str
                 )
             };
+            if is_military
+                && alt_ft.is_some_and(|a| a < 3000.0)
+                && speed_kts.is_some_and(|s| s > 350.0)
+            {
+                info.push_str(" [LOW-FAST]");
+            }
 
             tracks.push(TargetTrack {
                 id: icao,
@@ -526,12 +532,14 @@ impl OpenSkyClient {
                         continue;
                     }
 
-                    let alt_ft = if let Some(ft) = item["alt_baro"].as_f64() {
+                    let alt_baro = item["alt_baro"].as_f64();
+                    let alt_geom = item["alt_geom"].as_f64();
+                    let alt_ft = if let Some(ft) = alt_baro {
                         Some(ft)
                     } else if item["alt_baro"].as_str() == Some("ground") {
                         Some(0.0)
                     } else {
-                        item["alt_geom"].as_f64()
+                        alt_geom
                     };
                     let alt_m = alt_ft.map(|ft| ft * 0.3048);
 
@@ -569,6 +577,17 @@ impl OpenSkyClient {
                     );
                     if low_nav_integrity {
                         info.push_str(" | [EW:GPS-JAM]");
+                    }
+                    if is_military
+                        && alt_ft.is_some_and(|a| a < 3000.0)
+                        && speed_kts.is_some_and(|s| s > 350.0)
+                    {
+                        info.push_str(" [LOW-FAST]");
+                    }
+                    if let (Some(geom), Some(baro)) = (alt_geom, alt_baro) {
+                        if (geom - baro).abs() > 1500.0 {
+                            info.push_str(" [ALT-SPOOF]");
+                        }
                     }
 
                     tracks.push(TargetTrack {
@@ -648,10 +667,9 @@ impl OpenSkyClient {
                         .to_string();
                     let lon = arr.get(5).and_then(|v| v.as_f64());
                     let lat = arr.get(6).and_then(|v| v.as_f64());
-                    let alt_m = arr
-                        .get(13)
-                        .and_then(|v| v.as_f64())
-                        .or_else(|| arr.get(7).and_then(|v| v.as_f64()));
+                    let alt_baro_m = arr.get(7).and_then(|v| v.as_f64());
+                    let alt_geom_m = arr.get(13).and_then(|v| v.as_f64());
+                    let alt_m = alt_geom_m.or(alt_baro_m);
                     let on_ground = arr.get(8).and_then(|v| v.as_bool()).unwrap_or(false);
                     let vel_ms = arr.get(9).and_then(|v| v.as_f64());
                     let track_deg = arr.get(10).and_then(|v| v.as_f64());
@@ -686,6 +704,23 @@ impl OpenSkyClient {
                                     fallback_country,
                                 );
                             let theater = classify_air_theater(lat, lon);
+                            let mut info = format!(
+                                "[{}] FL{:.0} | SQWK: {}",
+                                theater,
+                                alt_ft.unwrap_or(0.0) / 100.0,
+                                squawk_str
+                            );
+                            if is_military
+                                && alt_ft.is_some_and(|a| a < 3000.0)
+                                && speed_kts.is_some_and(|s| s > 350.0)
+                            {
+                                info.push_str(" [LOW-FAST]");
+                            }
+                            if let (Some(geom_m), Some(baro_m)) = (alt_geom_m, alt_baro_m) {
+                                if ((geom_m - baro_m) * 3.28084).abs() > 1500.0 {
+                                    info.push_str(" [ALT-SPOOF]");
+                                }
+                            }
 
                             tracks.push(TargetTrack {
                                 id: icao,
@@ -713,12 +748,7 @@ impl OpenSkyClient {
                                 } else {
                                     format!("SIVIL ({})", theater)
                                 }),
-                                info: format!(
-                                    "[{}] FL{:.0} | SQWK: {}",
-                                    theater,
-                                    alt_ft.unwrap_or(0.0) / 100.0,
-                                    squawk_str
-                                ),
+                                info,
                                 last_seen: Utc::now(),
                             });
                         }
@@ -726,5 +756,46 @@ impl OpenSkyClient {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_low_fast_and_alt_spoof_tags() {
+        let json = serde_json::json!({
+            "ac": [
+                {
+                    "hex": "ae1234",
+                    "flight": "RCH999 ",
+                    "lat": 36.0,
+                    "lon": 36.0,
+                    "alt_baro": 1800.0,
+                    "alt_geom": 4200.0,
+                    "gs": 420.0,
+                    "dbFlags": 1
+                },
+                {
+                    "hex": "4b8001",
+                    "flight": "THY101",
+                    "lat": 41.0,
+                    "lon": 29.0,
+                    "alt_baro": 2000.0,
+                    "alt_geom": 2100.0,
+                    "gs": 390.0,
+                    "dbFlags": 0
+                }
+            ]
+        });
+        let mut tracks = Vec::new();
+        let mut seen = HashSet::new();
+        OpenSkyClient::parse_adsbfi_json(&json, &mut tracks, &mut seen);
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks[0].info.contains(" [LOW-FAST]"));
+        assert!(tracks[0].info.contains(" [ALT-SPOOF]"));
+        assert!(!tracks[1].info.contains("[LOW-FAST]"));
+        assert!(!tracks[1].info.contains("[ALT-SPOOF]"));
     }
 }

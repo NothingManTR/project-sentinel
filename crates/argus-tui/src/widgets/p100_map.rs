@@ -1,10 +1,14 @@
 use crate::widgets::world_vectors::{
     is_land_bitmap, NE_10M_REGIONAL_COASTS, NE_50M_BORDERS, NE_50M_COASTLINES, NE_50M_LAKES,
 };
+use argus_core::geo::{
+    bearing_sector_tr, dest_point, haversine_km, haversine_nm, initial_bearing_deg,
+    radar_horizon_km,
+};
 use argus_core::mouse::HitTarget;
 use argus_core::state::AppState;
 use argus_core::theme::*;
-use argus_core::types::{MapRenderStyle, TargetTrack};
+use argus_core::types::{Domain, MapRenderStyle, TargetTrack};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -797,159 +801,226 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
     }
 
-    // Deniz Araçları (^) [Katman 2] — Önbellekli & sıfır kopyalamalı
-    if state.geoint_layers & 2 != 0 {
-        state.ensure_sea_indices();
-        let mut reg_hits: Vec<(u16, u16, u16, usize)> = Vec::with_capacity(256);
+    let dvr_snap = if state.dvr.replay_offset_mins > 0 {
+        state.dvr.active_snapshot().cloned()
+    } else {
+        None
+    };
+
+    if let Some(ref snap) = dvr_snap {
+        // DVR Replay Modu: normal canli air_targets/sea_targets yerine gecmis snapshot izlerini ciz
         let buf = frame.buffer_mut();
-        for (sorted_pos, &buf_idx) in state.cached_sea_indices.iter().enumerate() {
-            let Some(track) = state.sea_targets.get(buf_idx) else {
-                continue;
+        for pt in &snap.tracks {
+            let show = match pt.domain {
+                Domain::Air => (state.geoint_layers & 1) != 0,
+                Domain::Sea => (state.geoint_layers & 2) != 0,
+                _ => true,
             };
-            if let Some((sx, sy)) = to_screen(track.geo.lon, track.geo.lat) {
-                let is_selected = state.selected_target_id.as_deref() == Some(track.id.as_str());
-                let is_warship = track.is_military || track.callsign.starts_with("TCG");
-                let col = if is_selected {
-                    TELETEXT_YELLOW
-                } else if is_warship {
-                    TELETEXT_RED
-                } else {
-                    TELETEXT_GREEN
-                };
-                let w_hit: u16 = if is_selected {
-                    let text = format!("[^ {}]", track.callsign);
-                    put_overlay_str(buf, area, sx, sy, &text, col, None, true);
-                    (text.chars().count() as u16).max(1)
-                } else if zoom >= 2.5 || is_warship {
-                    let text = format!("^{}", track.callsign);
-                    put_overlay_str(buf, area, sx, sy, &text, col, None, true);
-                    (text.chars().count() as u16).max(1)
-                } else {
-                    put_overlay_str(buf, area, sx, sy, "^", col, None, true);
-                    1
-                };
-                reg_hits.push((sx, sy, w_hit, sorted_pos));
+            if !show {
+                continue;
             }
-        }
-        for (sx, sy, w_hit, sorted_pos) in reg_hits {
-            state.hit_tester.register(
-                Rect {
-                    x: sx,
-                    y: sy,
-                    width: w_hit.min(area.x + area.width - sx),
-                    height: 1,
-                },
-                HitTarget::MapTarget(21, sorted_pos),
-            );
-        }
-    }
-
-    // Hava Araçları (+) [Katman 1] — Tek tarama + önbellekli indeks + hücre bazlı tekilleştirilmiş hit-test
-    if state.geoint_layers & 1 != 0 {
-        state.ensure_air_indices();
-        let gw = area.width as usize;
-        let gh = area.height as usize;
-        let mut cell_hit: Vec<Option<HitTarget>> = vec![None; gw * gh];
-        let mut vis_civ: Vec<(usize, usize, u16, u16)> = Vec::with_capacity(2048);
-        let mut vis_mil: Vec<(usize, usize, u16, u16)> = Vec::with_capacity(256);
-        let mut vis_sel: Option<(usize, usize, u16, u16)> = None;
-
-        for (sorted_pos, &buf_idx) in state.cached_air_indices.iter().enumerate() {
-            let Some(track) = state.air_targets.get(buf_idx) else {
-                continue;
-            };
-            if let Some((sx, sy)) = to_screen(track.geo.lon, track.geo.lat) {
-                if state.selected_target_id.as_deref() == Some(track.id.as_str()) {
-                    vis_sel = Some((sorted_pos, buf_idx, sx, sy));
-                } else if track.is_military {
-                    vis_mil.push((sorted_pos, buf_idx, sx, sy));
-                } else {
-                    vis_civ.push((sorted_pos, buf_idx, sx, sy));
+            if let Some((sx, sy)) = to_screen(pt.lon as f64, pt.lat as f64) {
+                let is_selected = state.selected_target_id.as_deref() == Some(pt.id.as_str());
+                match pt.domain {
+                    Domain::Sea => {
+                        let is_warship = pt.is_military || pt.callsign.starts_with("TCG");
+                        let col = if is_selected {
+                            TELETEXT_YELLOW
+                        } else if is_warship {
+                            TELETEXT_RED
+                        } else {
+                            TELETEXT_GREEN
+                        };
+                        let text = if is_selected {
+                            format!("[^ {}]", pt.callsign)
+                        } else if zoom >= 2.5 || is_warship {
+                            format!("^{}", pt.callsign)
+                        } else {
+                            "^".to_string()
+                        };
+                        put_overlay_str(buf, area, sx, sy, &text, col, None, true);
+                    }
+                    _ => {
+                        let col = if is_selected {
+                            TELETEXT_YELLOW
+                        } else if pt.is_military {
+                            Color::Rgb(210, 132, 82)
+                        } else {
+                            TELETEXT_CYAN
+                        };
+                        let text = if is_selected {
+                            if state.map_aircraft_shapes {
+                                format!("[{}]", heading_narrow_glyph(Some(pt.hdg_deg as f64)))
+                            } else {
+                                format!("[+ {}]", pt.callsign)
+                            }
+                        } else if state.map_aircraft_shapes {
+                            heading_narrow_glyph(Some(pt.hdg_deg as f64)).to_string()
+                        } else if pt.is_military || zoom >= 2.5 {
+                            format!("+{}", pt.callsign)
+                        } else {
+                            "+".to_string()
+                        };
+                        put_overlay_str(buf, area, sx, sy, &text, col, None, true);
+                    }
                 }
             }
         }
-
-        let buf = frame.buffer_mut();
-        let mut mark_cell = |sx: u16, sy: u16, w: u16, sorted_pos: usize| {
-            let rx = (sx - area.x) as usize;
-            let ry = (sy - area.y) as usize;
-            let max_w = (w as usize).min(gw.saturating_sub(rx));
-            for dx in 0..max_w {
-                cell_hit[ry * gw + rx + dx] = Some(HitTarget::MapTarget(20, sorted_pos));
-            }
-        };
-
-        let use_shapes = state.map_aircraft_shapes;
-        for (sorted_pos, buf_idx, sx, sy) in vis_civ {
-            let Some(track) = state.air_targets.get(buf_idx) else {
-                continue;
-            };
-            let w = if use_shapes {
-                let (glyph, gcol) = classify_aircraft_shape(track);
-                put_overlay_str(buf, area, sx, sy, glyph, gcol, None, true);
-                1
-            } else if zoom >= 2.5 {
-                let text = format!("+{}", track.callsign);
-                put_overlay_str(buf, area, sx, sy, &text, TELETEXT_CYAN, None, true);
-                (text.chars().count() as u16).max(1)
-            } else {
-                put_overlay_str(buf, area, sx, sy, "+", TELETEXT_CYAN, None, true);
-                1
-            };
-            mark_cell(sx, sy, w, sorted_pos);
-        }
-
-        let mil_col = Color::Rgb(210, 132, 82);
-        for (sorted_pos, buf_idx, sx, sy) in vis_mil {
-            let Some(track) = state.air_targets.get(buf_idx) else {
-                continue;
-            };
-            let w = if use_shapes {
-                let (glyph, gcol) = classify_aircraft_shape(track);
-                put_overlay_str(buf, area, sx, sy, glyph, gcol, None, true);
-                1
-            } else {
-                let text = format!("+{}", track.callsign);
-                put_overlay_str(buf, area, sx, sy, &text, mil_col, None, true);
-                (text.chars().count() as u16).max(1)
-            };
-            mark_cell(sx, sy, w, sorted_pos);
-        }
-
-        if let Some((sorted_pos, buf_idx, sx, sy)) = vis_sel {
-            if let Some(track) = state.air_targets.get(buf_idx) {
-                let text = if use_shapes {
-                    let (glyph, _) = classify_aircraft_shape(track);
-                    format!("[{}]", glyph)
-                } else {
-                    format!("[+ {}]", track.callsign)
+    } else {
+        // Deniz Araçları (^) [Katman 2] — Önbellekli & sıfır kopyalamalı
+        if state.geoint_layers & 2 != 0 {
+            state.ensure_sea_indices();
+            let mut reg_hits: Vec<(u16, u16, u16, usize)> = Vec::with_capacity(256);
+            let buf = frame.buffer_mut();
+            for (sorted_pos, &buf_idx) in state.cached_sea_indices.iter().enumerate() {
+                let Some(track) = state.sea_targets.get(buf_idx) else {
+                    continue;
                 };
-                put_overlay_str(buf, area, sx, sy, &text, TELETEXT_YELLOW, None, true);
-                let w = (text.chars().count() as u16).max(1);
+                if let Some((sx, sy)) = to_screen(track.geo.lon, track.geo.lat) {
+                    let is_selected = state.selected_target_id.as_deref() == Some(track.id.as_str());
+                    let is_warship = track.is_military || track.callsign.starts_with("TCG");
+                    let col = if is_selected {
+                        TELETEXT_YELLOW
+                    } else if is_warship {
+                        TELETEXT_RED
+                    } else {
+                        TELETEXT_GREEN
+                    };
+                    let w_hit: u16 = if is_selected {
+                        let text = format!("[^ {}]", track.callsign);
+                        put_overlay_str(buf, area, sx, sy, &text, col, None, true);
+                        (text.chars().count() as u16).max(1)
+                    } else if zoom >= 2.5 || is_warship {
+                        let text = format!("^{}", track.callsign);
+                        put_overlay_str(buf, area, sx, sy, &text, col, None, true);
+                        (text.chars().count() as u16).max(1)
+                    } else {
+                        put_overlay_str(buf, area, sx, sy, "^", col, None, true);
+                        1
+                    };
+                    reg_hits.push((sx, sy, w_hit, sorted_pos));
+                }
+            }
+            for (sx, sy, w_hit, sorted_pos) in reg_hits {
+                state.hit_tester.register(
+                    Rect {
+                        x: sx,
+                        y: sy,
+                        width: w_hit.min(area.x + area.width - sx),
+                        height: 1,
+                    },
+                    HitTarget::MapTarget(21, sorted_pos),
+                );
+            }
+        }
+
+        // Hava Araçları (+) [Katman 1] — Tek tarama + önbellekli indeks + hücre bazlı tekilleştirilmiş hit-test
+        if state.geoint_layers & 1 != 0 {
+            state.ensure_air_indices();
+            let gw = area.width as usize;
+            let gh = area.height as usize;
+            let mut cell_hit: Vec<Option<HitTarget>> = vec![None; gw * gh];
+            let mut vis_civ: Vec<(usize, usize, u16, u16)> = Vec::with_capacity(2048);
+            let mut vis_mil: Vec<(usize, usize, u16, u16)> = Vec::with_capacity(256);
+            let mut vis_sel: Option<(usize, usize, u16, u16)> = None;
+
+            for (sorted_pos, &buf_idx) in state.cached_air_indices.iter().enumerate() {
+                let Some(track) = state.air_targets.get(buf_idx) else {
+                    continue;
+                };
+                if let Some((sx, sy)) = to_screen(track.geo.lon, track.geo.lat) {
+                    if state.selected_target_id.as_deref() == Some(track.id.as_str()) {
+                        vis_sel = Some((sorted_pos, buf_idx, sx, sy));
+                    } else if track.is_military {
+                        vis_mil.push((sorted_pos, buf_idx, sx, sy));
+                    } else {
+                        vis_civ.push((sorted_pos, buf_idx, sx, sy));
+                    }
+                }
+            }
+
+            let buf = frame.buffer_mut();
+            let mut mark_cell = |sx: u16, sy: u16, w: u16, sorted_pos: usize| {
+                let rx = (sx - area.x) as usize;
+                let ry = (sy - area.y) as usize;
+                let max_w = (w as usize).min(gw.saturating_sub(rx));
+                for dx in 0..max_w {
+                    cell_hit[ry * gw + rx + dx] = Some(HitTarget::MapTarget(20, sorted_pos));
+                }
+            };
+
+            let use_shapes = state.map_aircraft_shapes;
+            for (sorted_pos, buf_idx, sx, sy) in vis_civ {
+                let Some(track) = state.air_targets.get(buf_idx) else {
+                    continue;
+                };
+                let w = if use_shapes {
+                    let (glyph, gcol) = classify_aircraft_shape(track);
+                    put_overlay_str(buf, area, sx, sy, glyph, gcol, None, true);
+                    1
+                } else if zoom >= 2.5 {
+                    let text = format!("+{}", track.callsign);
+                    put_overlay_str(buf, area, sx, sy, &text, TELETEXT_CYAN, None, true);
+                    (text.chars().count() as u16).max(1)
+                } else {
+                    put_overlay_str(buf, area, sx, sy, "+", TELETEXT_CYAN, None, true);
+                    1
+                };
                 mark_cell(sx, sy, w, sorted_pos);
             }
-        }
 
-        for ry in 0..gh {
-            let mut rx = 0usize;
-            while rx < gw {
-                if let Some(target) = cell_hit[ry * gw + rx] {
-                    let mut rx2 = rx + 1;
-                    while rx2 < gw && cell_hit[ry * gw + rx2] == Some(target) {
-                        rx2 += 1;
-                    }
-                    state.hit_tester.register(
-                        Rect {
-                            x: area.x + rx as u16,
-                            y: area.y + ry as u16,
-                            width: (rx2 - rx) as u16,
-                            height: 1,
-                        },
-                        target,
-                    );
-                    rx = rx2;
+            let mil_col = Color::Rgb(210, 132, 82);
+            for (sorted_pos, buf_idx, sx, sy) in vis_mil {
+                let Some(track) = state.air_targets.get(buf_idx) else {
+                    continue;
+                };
+                let w = if use_shapes {
+                    let (glyph, gcol) = classify_aircraft_shape(track);
+                    put_overlay_str(buf, area, sx, sy, glyph, gcol, None, true);
+                    1
                 } else {
-                    rx += 1;
+                    let text = format!("+{}", track.callsign);
+                    put_overlay_str(buf, area, sx, sy, &text, mil_col, None, true);
+                    (text.chars().count() as u16).max(1)
+                };
+                mark_cell(sx, sy, w, sorted_pos);
+            }
+
+            if let Some((sorted_pos, buf_idx, sx, sy)) = vis_sel {
+                if let Some(track) = state.air_targets.get(buf_idx) {
+                    let text = if use_shapes {
+                        let (glyph, _) = classify_aircraft_shape(track);
+                        format!("[{}]", glyph)
+                    } else {
+                        format!("[+ {}]", track.callsign)
+                    };
+                    put_overlay_str(buf, area, sx, sy, &text, TELETEXT_YELLOW, None, true);
+                    let w = (text.chars().count() as u16).max(1);
+                    mark_cell(sx, sy, w, sorted_pos);
+                }
+            }
+
+            for ry in 0..gh {
+                let mut rx = 0usize;
+                while rx < gw {
+                    if let Some(target) = cell_hit[ry * gw + rx] {
+                        let mut rx2 = rx + 1;
+                        while rx2 < gw && cell_hit[ry * gw + rx2] == Some(target) {
+                            rx2 += 1;
+                        }
+                        state.hit_tester.register(
+                            Rect {
+                                x: area.x + rx as u16,
+                                y: area.y + ry as u16,
+                                width: (rx2 - rx) as u16,
+                                height: 1,
+                            },
+                            target,
+                        );
+                        rx = rx2;
+                    } else {
+                        rx += 1;
+                    }
                 }
             }
         }
@@ -1146,7 +1217,300 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
     }
 
-    // 4. Alt Durum Şeridi
+    // Stratejik Bogaz Kapilari (zoom >= 1.5 veya Bit 12)
+    if (zoom >= 1.5 || (state.geoint_layers & (1 << 12)) != 0)
+        && ((state.geoint_layers & 2) != 0 || (state.geoint_layers & (1 << 12)) != 0)
+    {
+        for (g_idx, gate) in state.strait_gates.iter().enumerate() {
+            if let Some((gx, gy)) = to_screen(gate.center_lon, gate.center_lat) {
+                let tag = format!("║[{}]", gate.id);
+                put_overlay_str(
+                    frame.buffer_mut(),
+                    area,
+                    gx,
+                    gy,
+                    &tag,
+                    TELETEXT_YELLOW,
+                    Some(BG_PRIMARY),
+                    true,
+                );
+                let tw = tag.chars().count() as u16;
+                state.hit_tester.register(
+                    Rect {
+                        x: gx,
+                        y: gy,
+                        width: tw.min(area.x + area.width - gx),
+                        height: 1,
+                    },
+                    HitTarget::StraitGate(g_idx),
+                );
+            }
+        }
+    }
+
+    // AIS Dark-Ship (Dead Reckoning) hedefleri [Katman 2 veya Bit 14]
+    if (state.geoint_layers & 2) != 0 || (state.geoint_layers & (1 << 14)) != 0 {
+        for ds in &state.dark_ships {
+            if (ds.last_lon - ds.dr_lon).abs() < 180.0 {
+                let steps = 8;
+                for s in 1..steps {
+                    let f = (s as f64) / (steps as f64);
+                    let plon = ds.last_lon + (ds.dr_lon - ds.last_lon) * f;
+                    let plat = ds.last_lat + (ds.dr_lat - ds.last_lat) * f;
+                    if let Some((sx, sy)) = to_screen(plon, plat) {
+                        let buf = frame.buffer_mut();
+                        if buf[(sx, sy)].symbol() == " " {
+                            put_overlay_str(buf, area, sx, sy, ".", TELETEXT_RED, None, true);
+                        }
+                    }
+                }
+            }
+            if let Some((sx, sy)) = to_screen(ds.dr_lon, ds.dr_lat) {
+                put_overlay_str(
+                    frame.buffer_mut(),
+                    area,
+                    sx,
+                    sy,
+                    "[?DARK]",
+                    TELETEXT_RED,
+                    Some(BG_PRIMARY),
+                    true,
+                );
+            }
+        }
+    }
+
+    // Tanker-Avci Havada Yakit Ikmali (AAR) ciftleri [Katman 1 veya Bit 14]
+    if (state.geoint_layers & 1) != 0 || (state.geoint_layers & (1 << 14)) != 0 {
+        for pair in &state.aar_pairs {
+            let t_pos = state
+                .air_targets
+                .iter()
+                .find(|t| t.id == pair.tanker_id)
+                .map(|t| (t.geo.lon, t.geo.lat));
+            let r_pos = state
+                .air_targets
+                .iter()
+                .find(|t| t.id == pair.receiver_id)
+                .map(|t| (t.geo.lon, t.geo.lat));
+
+            let (mid_lon, mid_lat) =
+                if let (Some((lon1, lat1)), Some((lon2, lat2))) = (t_pos, r_pos) {
+                    if (lon1 - lon2).abs() < 180.0 {
+                        let steps = 12;
+                        for s in 1..steps {
+                            let f = (s as f64) / (steps as f64);
+                            let plon = lon1 + (lon2 - lon1) * f;
+                            let plat = lat1 + (lat2 - lat1) * f;
+                            if let Some((sx, sy)) = to_screen(plon, plat) {
+                                let buf = frame.buffer_mut();
+                                if buf[(sx, sy)].symbol() == " " {
+                                    put_overlay_str(
+                                        buf,
+                                        area,
+                                        sx,
+                                        sy,
+                                        ".",
+                                        TELETEXT_YELLOW,
+                                        None,
+                                        true,
+                                    );
+                                }
+                            }
+                        }
+                        ((lon1 + lon2) * 0.5, (lat1 + lat2) * 0.5)
+                    } else {
+                        (pair.lon, pair.lat)
+                    }
+                } else {
+                    (pair.lon, pair.lat)
+                };
+
+            if let Some((mx, my)) = to_screen(mid_lon, mid_lat) {
+                put_overlay_str(
+                    frame.buffer_mut(),
+                    area,
+                    mx,
+                    my,
+                    "[AAR]",
+                    TELETEXT_YELLOW,
+                    Some(BG_PRIMARY),
+                    true,
+                );
+            }
+        }
+    }
+
+    // Taktik Cetvel, Jeodezik Tehdit Halkasi, Mach ETA ve Radar Ufku LOS
+    if let Some(ruler) = state.tactical_ruler.clone() {
+        if let Some(r_km) = ruler.threat_ring_km {
+            let mut ring_pts = Vec::with_capacity(37);
+            for i in 0..=36 {
+                let brg = (i as f64) * 10.0;
+                ring_pts.push(dest_point(ruler.pin_a.0, ruler.pin_a.1, brg, r_km));
+            }
+            let buf = frame.buffer_mut();
+            for seg in ring_pts.windows(2) {
+                let (lat1, lon1) = seg[0];
+                let (lat2, lon2) = seg[1];
+                if let Some((sx, sy)) = to_screen(lon1, lat1) {
+                    if buf[(sx, sy)].symbol() == " " {
+                        put_overlay_str(buf, area, sx, sy, ".", TELETEXT_RED, None, true);
+                    }
+                }
+                if (lon1 - lon2).abs() < 180.0 {
+                    for sub in 1..=2 {
+                        let f = (sub as f64) / 3.0;
+                        let ilon = lon1 + (lon2 - lon1) * f;
+                        let ilat = lat1 + (lat2 - lat1) * f;
+                        if let Some((sx, sy)) = to_screen(ilon, ilat) {
+                            if buf[(sx, sy)].symbol() == " " {
+                                put_overlay_str(buf, area, sx, sy, ".", TELETEXT_RED, None, false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(ref pb) = ruler.pin_b {
+            if (ruler.pin_a.1 - pb.1).abs() < 180.0 {
+                let buf = frame.buffer_mut();
+                let steps = 32;
+                for s in 1..steps {
+                    let f = (s as f64) / (steps as f64);
+                    let plon = ruler.pin_a.1 + (pb.1 - ruler.pin_a.1) * f;
+                    let plat = ruler.pin_a.0 + (pb.0 - ruler.pin_a.0) * f;
+                    if let Some((sx, sy)) = to_screen(plon, plat) {
+                        if buf[(sx, sy)].symbol() == " " {
+                            put_overlay_str(buf, area, sx, sy, ".", TELETEXT_YELLOW, None, true);
+                        }
+                    }
+                }
+            }
+            if let Some((bx, by)) = to_screen(pb.1, pb.0) {
+                put_overlay_str(
+                    frame.buffer_mut(),
+                    area,
+                    bx,
+                    by,
+                    "[B]",
+                    TELETEXT_BLACK,
+                    Some(TELETEXT_CYAN),
+                    true,
+                );
+            }
+        }
+        if let Some((ax, ay)) = to_screen(ruler.pin_a.1, ruler.pin_a.0) {
+            put_overlay_str(
+                frame.buffer_mut(),
+                area,
+                ax,
+                ay,
+                "[A]",
+                TELETEXT_BLACK,
+                Some(TELETEXT_YELLOW),
+                true,
+            );
+        }
+
+        let (b_lat, b_lon, b_name) = match &ruler.pin_b {
+            Some(pb) => (pb.0, pb.1, pb.2.as_str()),
+            None => (state.map_center_lat, state.map_center_lon, "MRK"),
+        };
+        let d_km = haversine_km(ruler.pin_a.0, ruler.pin_a.1, b_lat, b_lon);
+        let d_nm = haversine_nm(ruler.pin_a.0, ruler.pin_a.1, b_lat, b_lon);
+        let brg = initial_bearing_deg(ruler.pin_a.0, ruler.pin_a.1, b_lat, b_lon);
+        let sec = bearing_sector_tr(brg);
+
+        let fmt_eta = |speed_kmh: f64| -> String {
+            let mins = (d_km / speed_kmh) * 60.0;
+            if mins < 1.0 {
+                format!("{:.0}sn", (mins * 60.0).round())
+            } else if mins < 60.0 {
+                format!("{:.1}dk", mins)
+            } else {
+                let total = mins.round() as u64;
+                format!("{}s{:02}d", total / 60, total % 60)
+            }
+        };
+        let target_alt_m = state
+            .selected_target_id
+            .as_ref()
+            .and_then(|id| {
+                state
+                    .air_targets
+                    .iter()
+                    .find(|t| &t.id == id)
+                    .or_else(|| state.sea_targets.iter().find(|t| &t.id == id))
+            })
+            .and_then(|t| t.geo.alt_m)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let los_km = radar_horizon_km(30.0, target_alt_m);
+        let ring_txt = ruler
+            .threat_ring_km
+            .map(|r| format!(" | Halka:{:.0}km", r))
+            .unwrap_or_default();
+
+        let ruler_hud = format!(
+            " CETVEL [{}->{}]: {:.1}km({:.1}NM) {:03.0}deg {} | M0.85:{} M1.6:{} M4.5:{} | LOS:{:.0}km{} ",
+            ruler.pin_a.2,
+            b_name,
+            d_km,
+            d_nm,
+            brg,
+            sec,
+            fmt_eta(903.0),
+            fmt_eta(1700.0),
+            fmt_eta(4780.0),
+            los_km,
+            ring_txt,
+        );
+        let hud_y = if dvr_snap.is_some() && area.height >= 4 {
+            area.y + 1
+        } else {
+            area.y
+        };
+        let max_hud_w = area.width.saturating_sub(2) as usize;
+        let clipped_hud: String = ruler_hud.chars().take(max_hud_w).collect();
+        put_overlay_str(
+            frame.buffer_mut(),
+            area,
+            area.x + 1,
+            hud_y,
+            &clipped_hud,
+            TELETEXT_YELLOW,
+            Some(BG_SURFACE),
+            true,
+        );
+    }
+
+    // DVR Replay Ust Orta Uyari Seridi
+    if let Some(ref snap) = dvr_snap {
+        let banner = format!(
+            " [<< DVR REPLAY: -{}dk ({}Z) | {} Iz] ",
+            state.dvr.replay_offset_mins,
+            snap.timestamp.format("%H:%M"),
+            snap.tracks.len()
+        );
+        let max_bw = area.width.saturating_sub(2) as usize;
+        let clipped: String = banner.chars().take(max_bw).collect();
+        let bw = clipped.chars().count() as u16;
+        let bx = area.x + area.width.saturating_sub(bw) / 2;
+        put_overlay_str(
+            frame.buffer_mut(),
+            area,
+            bx,
+            area.y,
+            &clipped,
+            TELETEXT_BLACK,
+            Some(TELETEXT_YELLOW),
+            true,
+        );
+    }
+
+    // 4. Alt Durum Şeridi + Sag Alt DVR Hizli Kontrol Butonlari
     let fov_km = (2.0 * x_half * 111.0 * cos_lat).max(1.0);
     let sdr_legend = if state.geoint_layers & 128 != 0 {
         " [&]SDR"
@@ -1162,22 +1526,70 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         " FOV:{:.0}km | Z:{:.1}x | {:.2}N,{:.2}E | {} [^]Deniz [*]Uydu [@]Deprem [#]Termal{} ",
         fov_km, zoom, state.map_center_lat, state.map_center_lon, air_legend, sdr_legend
     );
-    put_overlay_str(
-        frame.buffer_mut(),
-        area,
-        area.x + 1,
-        area.y + area.height - 1,
-        &bottom_hud,
-        FG_SECONDARY,
-        Some(BG_PRIMARY),
-        false,
-    );
+    let dvr_btns = [
+        ("[<-60d]", HitTarget::DvrStep(-60), state.dvr.replay_offset_mins == 60),
+        ("[-15d]", HitTarget::DvrStep(-15), state.dvr.replay_offset_mins == 15),
+        ("[-5d]", HitTarget::DvrStep(-5), state.dvr.replay_offset_mins == 5),
+        ("[CANLI]", HitTarget::DvrStep(0), state.dvr.replay_offset_mins == 0),
+    ];
+    let btns_total_w: u16 = dvr_btns
+        .iter()
+        .map(|(l, _, _)| l.chars().count() as u16)
+        .sum::<u16>()
+        + (dvr_btns.len().saturating_sub(1) as u16);
+
+    let bottom_y = area.y + area.height - 1;
+    let right_edge = area.x + area.width.saturating_sub(1);
+    let hud_max_w = if area.width > btns_total_w + 6 {
+        (area.width - btns_total_w - 3) as usize
+    } else {
+        0
+    };
+    let clipped_bottom: String = bottom_hud.chars().take(hud_max_w).collect();
+    if !clipped_bottom.is_empty() {
+        put_overlay_str(
+            frame.buffer_mut(),
+            area,
+            area.x + 1,
+            bottom_y,
+            &clipped_bottom,
+            FG_SECONDARY,
+            Some(BG_PRIMARY),
+            false,
+        );
+    }
+    if area.width >= btns_total_w + 2 {
+        let mut bx = right_edge.saturating_sub(btns_total_w);
+        for (lbl, target, active) in dvr_btns {
+            let bw = lbl.chars().count() as u16;
+            let is_live_btn = matches!(target, HitTarget::DvrStep(0));
+            let (fg, bg) = if active {
+                (
+                    TELETEXT_BLACK,
+                    if is_live_btn { TELETEXT_GREEN } else { TELETEXT_YELLOW },
+                )
+            } else {
+                (FG_PRIMARY, BG_SURFACE)
+            };
+            put_overlay_str(frame.buffer_mut(), area, bx, bottom_y, lbl, fg, Some(bg), true);
+            state.hit_tester.register(
+                Rect {
+                    x: bx,
+                    y: bottom_y,
+                    width: bw,
+                    height: 1,
+                },
+                target,
+            );
+            bx += bw + 1;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argus_core::types::{Domain, GeoPoint};
+    use argus_core::types::GeoPoint;
     use chrono::Utc;
 
     fn mock_air(cls: &str, mil: bool, hdg: f64) -> TargetTrack {

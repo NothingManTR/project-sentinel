@@ -105,7 +105,7 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         })
         .collect();
 
-    // 4. AIRINT (AOR dağılımı, Acil Squawk 7500/7600/7700, Öncelikli 25 Askeri/Anomalili Uçuş)
+    // 4. AIRINT (AOR dağılımı, Acil Squawk 7500/7600/7700, Öncelikli 25 Askeri/Anomalili Uçuş + AAR)
     let mil_air = state.air_targets.iter().filter(|t| t.is_military).count();
     let mut aor_counts: BTreeMap<&str, usize> = BTreeMap::new();
     let mut emerg_flights = Vec::new();
@@ -181,6 +181,84 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         .map(|(k, v)| format!("{}:{}", k, v))
         .collect();
     let top_air: Vec<String> = air_prioritized.into_iter().take(25).map(|x| x.2).collect();
+
+    // 4.5 Taktik Füzyon Özetleri (DARK-SHIP, BOGAZ, AAR, RECON, EVI)
+    let aar_list: Vec<String> = state
+        .aar_pairs
+        .iter()
+        .take(10)
+        .map(|p| {
+            format!(
+                "{}<->{} @ {:.2},{:.2} FL{:.0} ({:.1}km{})",
+                p.tanker_callsign,
+                p.receiver_callsign,
+                p.lat,
+                p.lon,
+                p.alt_ft / 100.0,
+                p.dist_km,
+                if p.is_locked { " KILITLI" } else { "" }
+            )
+        })
+        .collect();
+    let dark_list: Vec<String> = state
+        .dark_ships
+        .iter()
+        .take(10)
+        .map(|d| {
+            format!(
+                "{} [{}] Son:{:.2},{:.2}->DR:{:.2},{:.2} {:.1}kt/{:.0}deg ({}dk{})",
+                d.callsign,
+                d.id,
+                d.last_lat,
+                d.last_lon,
+                d.dr_lat,
+                d.dr_lon,
+                d.sog_kts,
+                d.cog_deg,
+                d.silent_mins,
+                if d.is_military { " ASKERI" } else { "" }
+            )
+        })
+        .collect();
+    let strait_list: Vec<String> = state
+        .strait_gates
+        .iter()
+        .map(|g| {
+            format!(
+                "{} ({}:{}/{} Mil:{} Tanker:{})",
+                g.name, g.fwd_label, g.fwd_count, g.rev_count, g.mil_count, g.tanker_count
+            )
+        })
+        .collect();
+    let recon_list: Vec<String> = state
+        .recon_windows
+        .iter()
+        .take(10)
+        .map(|r| {
+            format!(
+                "{} [{}] -> {} ({:.2},{:.2}) AOS:{}dk El:{:.0}deg{}",
+                r.sat_name,
+                r.sensor_type,
+                r.target_name,
+                r.target_lat,
+                r.target_lon,
+                r.aos_secs / 60,
+                r.max_el_deg,
+                if r.cloud_blocked { " BULUT-ENGELLI" } else { " ACIK" }
+            )
+        })
+        .collect();
+    let evi_list: Vec<String> = state
+        .escalation_metrics
+        .iter()
+        .take(10)
+        .map(|e| {
+            format!(
+                "{} ({}) EVI:{} ({:+}%) Olay:{}",
+                e.country_name, e.country_code, e.evi_score, e.delta_pct, e.event_count
+            )
+        })
+        .collect();
 
     // 5. SEAINT (Harp/Sahil Güvenlik/Anomali + En Yakın 15 Gemi)
     let mil_sea = state.sea_targets.iter().filter(|t| t.is_military).count();
@@ -529,10 +607,13 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         === 3. AIRINT (ADS-B) ===\n\
         Toplam Ucak: {} | Askeri/ISR: {} | AOR Dagilimi: {}\n\
         Acil Squawk (7500/7600/7700): {}\n\
-        Oncelikli Askeri/Anomalili Ucuslar: {}\n\n\
+        Oncelikli Askeri/Anomalili Ucuslar: {}\n\
+        AAR Hava Yakit Ikmal Paketleri ({}): {}\n\n\
         === 4. SEAINT (AIS) ===\n\
         Toplam Gemi: {} | Harp/Sahil Guv: {}\n\
-        Oncelikli/Yakin Gemiler: {}\n\n\
+        Oncelikli/Yakin Gemiler: {}\n\
+        DARK-SHIP (AIS Karartma/DR) ({}): {}\n\
+        BOGAZ Kapilari (Gatekeeper) ({}): {}\n\n\
         === 5. GEOINT / KABLO / GPS-JAM / NOTAM / FUZYON ===\n\
         K-1 Denizalti Kablo Sayisi: {}\n\
         N-4 Hava Sahasi / NOTAM / SIGMET ({}): {}\n\
@@ -540,7 +621,8 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         Parkur Anomalileri ({}): {}\n\
         K-4 Coklu-Sensor Fuzyon Kumeleri ({}): {}\n\n\
         === 6. SATINT (CelesTrak SGP4) ===\n\
-        Toplam Uydu: {} (Ufuk Ustu: {}) | Gorunum/Yakin Gecisler: {}\n\n\
+        Toplam Uydu: {} (Ufuk Ustu: {}) | Gorunum/Yakin Gecisler: {}\n\
+        RECON Uydu Kesif Pencereleri ({}): {}\n\n\
         === 7. SIGINT (KiwiSDR + HFGCS EAM) ===\n\
         Tuner/DSP: {}\n\
         Bant Tarama Yakalamalari ({}): {}\n\
@@ -555,6 +637,7 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         CISA KEV / IODA Siber ({}): {}\n\
         Shodan Kesif Onbellegi ({}): {}\n\
         ACLED Catisma Olaylari ({}): {}\n\
+        EVI Tirmanma Indeksi (GDELT) ({}): {}\n\
         OSINT Haber Akisi ({}): {}",
         now_utc,
         state.config.station.callsign,
@@ -576,9 +659,15 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         if aor_summary.is_empty() { "Yok".to_string() } else { aor_summary.join(", ") },
         if emerg_flights.is_empty() { "Yok".to_string() } else { emerg_flights.join(" | ") },
         if top_air.is_empty() { "Yok".to_string() } else { top_air.join(" | ") },
+        state.aar_pairs.len(),
+        if aar_list.is_empty() { "Yok".to_string() } else { aar_list.join(" | ") },
         state.sea_targets.len(),
         mil_sea,
         if top_sea.is_empty() { "Yok".to_string() } else { top_sea.join(" | ") },
+        state.dark_ships.len(),
+        if dark_list.is_empty() { "Yok".to_string() } else { dark_list.join(" | ") },
+        state.strait_gates.len(),
+        if strait_list.is_empty() { "Yok".to_string() } else { strait_list.join(" | ") },
         state.subsea_cables.len(),
         state.airspace_warnings.len(),
         if notam_list.is_empty() { "Yok".to_string() } else { notam_list.join(" | ") },
@@ -591,6 +680,8 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         state.satellites.len(),
         above_horizon,
         if top_sats.is_empty() { "Yok".to_string() } else { top_sats.join(" | ") },
+        state.recon_windows.len(),
+        if recon_list.is_empty() { "Yok".to_string() } else { recon_list.join(" | ") },
         sdr_line,
         state.sdr_scan_hits.len(),
         if scan_hits.is_empty() { "Yok".to_string() } else { scan_hits.join(" | ") },
@@ -612,12 +703,14 @@ pub fn build_tactical_prompt(state: &AppState) -> String {
         if shodan_list.is_empty() { "Yok".to_string() } else { shodan_list.join(" | ") },
         state.acled_events.len(),
         if acled_top.is_empty() { "Yok".to_string() } else { acled_top.join(" | ") },
+        state.escalation_metrics.len(),
+        if evi_list.is_empty() { "Yok".to_string() } else { evi_list.join(" | ") },
         state.news.len(),
         if top_news.is_empty() { "Yok".to_string() } else { top_news.join(" | ") },
     )
 }
 
-/// Seçilen analiz moduna (`0=Küresel Flashpoint`, `1=Seçili Hedef`, `2=Bölgesel Kriz`, `3=Özel Soru`)
+/// Seçilen analiz moduna (`0=Küresel Flashpoint`, `1=Seçili Hedef`, `2=Bölgesel Kriz`, `3=Özel Soru`, `4=Kırmızı Hücre OPFOR`)
 /// göre özelleştirilmiş kapsamlı Gemini istemi oluşturur.
 pub fn build_mode_prompt(state: &AppState, mode: usize, custom_question: &str) -> String {
     let base = build_tactical_prompt(state);
@@ -723,6 +816,155 @@ pub fn build_mode_prompt(state: &AppState, mode: usize, custom_question: &str) -
                 KULLANICI SORUSU: \"{}\"\n\n\
                 Asagidaki canli coklu-sensor telemetrisini ve genel jeopolitik/askeri bilgini kullanarak yukaridaki soruyu ayrintili, somut verilere dayali ve madde madde Turkce olarak yanitla. Sensor verisinde olmayan seyi uydurma.\n\n{}",
                 q, base
+            )
+        }
+        4 => {
+            let recon_summary: Vec<String> = state
+                .recon_windows
+                .iter()
+                .take(10)
+                .map(|r| {
+                    format!(
+                        "{} (#{}, {}) -> {} ({:.2},{:.2}) AOS:{}dk MaxEl:{:.0}deg [{}]",
+                        r.sat_name,
+                        r.norad_id,
+                        r.sensor_type,
+                        r.target_name,
+                        r.target_lat,
+                        r.target_lon,
+                        r.aos_secs / 60,
+                        r.max_el_deg,
+                        if r.cloud_blocked {
+                            "BULUT-KAPALI/KOR-PENCERE"
+                        } else {
+                            "ACIK-GORUS"
+                        }
+                    )
+                })
+                .collect();
+            let ew_summary: Vec<String> = state
+                .gps_jamming_zones
+                .iter()
+                .take(12)
+                .map(|(lat, lon, r, lbl)| format!("{} ({:.2},{:.2} r={:.2})", lbl, lat, lon, r))
+                .collect();
+            let dark_summary: Vec<String> = state
+                .dark_ships
+                .iter()
+                .take(12)
+                .map(|d| {
+                    format!(
+                        "{} [{}] Son:{:.2},{:.2}->DR:{:.2},{:.2} {:.1}kt/{:.0}deg ({}dk{})",
+                        d.callsign,
+                        d.id,
+                        d.last_lat,
+                        d.last_lon,
+                        d.dr_lat,
+                        d.dr_lon,
+                        d.sog_kts,
+                        d.cog_deg,
+                        d.silent_mins,
+                        if d.is_military { " ASKERI" } else { "" }
+                    )
+                })
+                .collect();
+            let gate_summary: Vec<String> = state
+                .strait_gates
+                .iter()
+                .map(|g| {
+                    format!(
+                        "{} ({}:{} / {}:{}, Mil:{}, Tanker:{})",
+                        g.name,
+                        g.fwd_label,
+                        g.fwd_count,
+                        g.rev_label,
+                        g.rev_count,
+                        g.mil_count,
+                        g.tanker_count
+                    )
+                })
+                .collect();
+            let aar_summary: Vec<String> = state
+                .aar_pairs
+                .iter()
+                .take(10)
+                .map(|p| {
+                    format!(
+                        "{}<->{} @ {:.2},{:.2} FL{:.0} ({:.1}km{})",
+                        p.tanker_callsign,
+                        p.receiver_callsign,
+                        p.lat,
+                        p.lon,
+                        p.alt_ft / 100.0,
+                        p.dist_km,
+                        if p.is_locked { " KILITLI" } else { "" }
+                    )
+                })
+                .collect();
+            let evi_summary: Vec<String> = state
+                .escalation_metrics
+                .iter()
+                .take(10)
+                .map(|e| {
+                    format!(
+                        "{} ({}) EVI:{} ({:+}%, Olay:{})",
+                        e.country_name, e.country_code, e.evi_score, e.delta_pct, e.event_count
+                    )
+                })
+                .collect();
+            let shodan_summary: Vec<String> = state
+                .shodan_recon_cache
+                .values()
+                .take(8)
+                .map(|h| {
+                    let cves: Vec<String> = h.vulns.iter().take(5).cloned().collect();
+                    format!(
+                        "{} ({}) Port:{:?} CVE({}):[{}] AltAlan:{}",
+                        h.ip,
+                        h.country.as_deref().unwrap_or("-"),
+                        &h.ports[..h.ports.len().min(10)],
+                        h.vulns.len(),
+                        if cves.is_empty() {
+                            "-".to_string()
+                        } else {
+                            cves.join(",")
+                        },
+                        h.subdomains.len()
+                    )
+                })
+                .collect();
+
+            format!(
+                "[MOD 5: KIRMIZI HUCRE / OPFOR KARSI KUVVET KOMUTANI]\n\
+                Sen simdi Mavi Kuvvet (Project Sentinel) karsisindaki Kirmizi Hucre / OPFOR Karsi Kuvvet Komutanisin.\n\
+                Asagidaki canli istihbarat bosluklarini, uydu bulut/gecis pencerelerini, EW/GPS karistirma alanlarini, AIS karartan Dark-Ship gemilerini, bogaz kapilarini, Mavi AAR ikmal paketlerini, GDELT EVI gerilim merkezlerini ve Shodan acik port/CVE yuzeyini kullanarak Turkce olarak TAM 4 BASLIKLI analiz uret:\n\
+                1. Mavi Kuvvet Kor Noktalari (uydu bulut/gecis bosluklari, EW karartma, radar ufku ve deniz karartma aciklari)\n\
+                2. Kirmizi Hucre Sizma Vektorleri (Dark-Ship DR rotalari, bogaz/kablo sabotaji, Shodan acik port/CVE siber-fiziksel sizma ve yuksek EVI eksenleri)\n\
+                3. EW/Aldatma (GNSS spoofing/jamming, Mavi AAR tanker/ISR paketlerine yonelik elektronik taarruz ve sahte iz manevralari)\n\
+                4. Mavi Karsi Tedbir & Sensor Gorevlendirme (SAR uydu gecisi, KiwiSDR frekans tarama, Watchlist kilitleme, CAP devriyesi ve Siber/CVE kapatma adimlari)\n\n\
+                === KIRMIZI HUCRE TAKTIK TELEMETRI OZETI ===\n\
+                RECON Kesif Pencereleri ({}): {}\n\
+                GPS-JAM / EW Bolgeleri ({}): {}\n\
+                DARK-SHIP Kararan Gemiler ({}): {}\n\
+                BOGAZ Gecis Kapilari ({}): {}\n\
+                AAR Yakit Ikmal Paketleri ({}): {}\n\
+                EVI Tirmanma Indeksi ({}): {}\n\
+                SHODAN Acik Port / CVE Yuzeyi ({}): {}\n\n{}",
+                state.recon_windows.len(),
+                if recon_summary.is_empty() { "Yok".to_string() } else { recon_summary.join(" | ") },
+                state.gps_jamming_zones.len(),
+                if ew_summary.is_empty() { "Yok".to_string() } else { ew_summary.join(" | ") },
+                state.dark_ships.len(),
+                if dark_summary.is_empty() { "Yok".to_string() } else { dark_summary.join(" | ") },
+                state.strait_gates.len(),
+                if gate_summary.is_empty() { "Yok".to_string() } else { gate_summary.join(" | ") },
+                state.aar_pairs.len(),
+                if aar_summary.is_empty() { "Yok".to_string() } else { aar_summary.join(" | ") },
+                state.escalation_metrics.len(),
+                if evi_summary.is_empty() { "Yok".to_string() } else { evi_summary.join(" | ") },
+                state.shodan_recon_cache.len(),
+                if shodan_summary.is_empty() { "Yok".to_string() } else { shodan_summary.join(" | ") },
+                base
             )
         }
         _ => base,
@@ -920,12 +1162,17 @@ mod tests {
             "=== 1. KOMUTA & KONUM ===",
             "=== 2. ALARMLAR & WATCHLIST ===",
             "=== 3. AIRINT (ADS-B) ===",
+            "AAR Hava Yakit Ikmal Paketleri",
             "=== 4. SEAINT (AIS) ===",
+            "DARK-SHIP (AIS Karartma/DR)",
+            "BOGAZ Kapilari (Gatekeeper)",
             "=== 5. GEOINT / KABLO / GPS-JAM",
             "=== 6. SATINT (CelesTrak SGP4) ===",
+            "RECON Uydu Kesif Pencereleri",
             "=== 7. SIGINT (KiwiSDR + HFGCS EAM) ===",
             "=== 8. MASINT (JEOSISMIK / TERMAL / CBRN / UZAY / METEO) ===",
             "=== 9. CYBERINT & CATISMA & OSINT ===",
+            "EVI Tirmanma Indeksi (GDELT)",
             "382.4K",
             "0.140 uSv/h",
             "ISS (#25544)",
@@ -948,6 +1195,58 @@ mod tests {
             center_lon: 35.0,
             summary: "Test sahasi".to_string(),
         });
+        st.recon_windows.push(argus_core::types::ReconWindow {
+            sat_name: "SENTINEL-1A".to_string(),
+            norad_id: 39634,
+            sensor_type: "SAR".to_string(),
+            target_name: "Hurmuz".to_string(),
+            target_lat: 26.5,
+            target_lon: 56.2,
+            aos_secs: 240,
+            max_el_deg: 55.0,
+            cloud_blocked: false,
+        });
+        st.dark_ships.push(argus_core::types::DarkShipTrack {
+            id: "271000999".to_string(),
+            callsign: "GHOST SHIP".to_string(),
+            last_lat: 35.1,
+            last_lon: 28.2,
+            dr_lat: 35.3,
+            dr_lon: 28.4,
+            sog_kts: 12.0,
+            cog_deg: 45.0,
+            silent_mins: 22,
+            is_military: false,
+            vessel_type: Some("Tanker".to_string()),
+        });
+        st.aar_pairs.push(argus_core::types::AarPair {
+            tanker_id: "ae01".to_string(),
+            tanker_callsign: "LAGR10".to_string(),
+            receiver_id: "ae02".to_string(),
+            receiver_callsign: "VIPER01".to_string(),
+            lat: 36.2,
+            lon: 35.8,
+            alt_ft: 24000.0,
+            dist_km: 1.8,
+            is_locked: true,
+        });
+        st.escalation_metrics.push(argus_core::types::EscalationMetric {
+            country_code: "TR".to_string(),
+            country_name: "Turkiye".to_string(),
+            evi_score: 68,
+            delta_pct: 25,
+            event_count: 14,
+        });
+        st.shodan_recon_cache.insert(
+            "1.2.3.4".to_string(),
+            argus_core::types::ShodanHostInfo {
+                ip: "1.2.3.4".to_string(),
+                ports: vec![22, 443],
+                vulns: vec!["CVE-2024-1234".to_string()],
+                subdomains: vec!["vpn.test.mil".to_string()],
+                ..Default::default()
+            },
+        );
 
         let m0 = build_mode_prompt(&st, 0, "");
         assert!(m0.contains("N-4 Hava Sahasi / NOTAM / SIGMET (1)"));
@@ -958,5 +1257,15 @@ mod tests {
         let m3 = build_mode_prompt(&st, 3, "Hurmuz Bogazi kapatilirsa ne olur?");
         assert!(m3.contains("[MOD 4: OZEL ISTIHBARAT SORUSU]"));
         assert!(m3.contains("Hurmuz Bogazi kapatilirsa ne olur?"));
+        let m4 = build_mode_prompt(&st, 4, "");
+        assert!(m4.contains("[MOD 5: KIRMIZI HUCRE / OPFOR KARSI KUVVET KOMUTANI]"));
+        assert!(m4.contains("Mavi Kuvvet Kor Noktalari"));
+        assert!(m4.contains("Kirmizi Hucre Sizma Vektorleri"));
+        assert!(m4.contains("EW/Aldatma"));
+        assert!(m4.contains("Mavi Karsi Tedbir & Sensor Gorevlendirme"));
+        assert!(m4.contains("SENTINEL-1A"));
+        assert!(m4.contains("GHOST SHIP"));
+        assert!(m4.contains("LAGR10"));
+        assert!(m4.contains("CVE-2024-1234"));
     }
 }

@@ -346,7 +346,78 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
         rows[1],
     );
 
-    // SATIR 2: Kompakt Baglamsal Kontrol Seridi
+    // SATIR 2: Kompakt Baglamsal Kontrol Seridi (veya aktif Kritik Flas Alarm Seridi)
+    if let Some(flash) = state.active_flash_alert.as_ref().filter(|f| !f.acked) {
+        let prefix = " [! KRITIK IKAZ] ";
+        let sep = "  ";
+        let focus_lbl = "[ODAKLA]";
+        let ack_lbl = "[X:Kapat]";
+        let prefix_w = prefix.chars().count() as u16;
+        let sep_w = sep.chars().count() as u16;
+        let focus_w = focus_lbl.chars().count() as u16;
+        let ack_w = ack_lbl.chars().count() as u16;
+        let fixed_w = prefix_w + sep_w + focus_w + 1 + ack_w + 1;
+        let msg_budget = rows[2].width.saturating_sub(fixed_w) as usize;
+        let msg_str: String = if flash.message.chars().count() > msg_budget && msg_budget >= 3 {
+            let mut s: String = flash.message.chars().take(msg_budget - 2).collect();
+            s.push_str("..");
+            s
+        } else {
+            flash.message.chars().take(msg_budget).collect()
+        };
+        let msg_w = msg_str.chars().count() as u16;
+        let banner_style = Style::default()
+            .fg(TELETEXT_WHITE)
+            .bg(TELETEXT_RED)
+            .add_modifier(Modifier::BOLD);
+        let focus_style = Style::default()
+            .fg(TELETEXT_YELLOW)
+            .bg(TELETEXT_RED)
+            .add_modifier(Modifier::BOLD);
+
+        let focus_x = rows[2].x + prefix_w + msg_w + sep_w;
+        let ack_x = focus_x + focus_w + 1;
+        let used_w = prefix_w + msg_w + sep_w + focus_w + 1 + ack_w;
+        let pad_w = rows[2].width.saturating_sub(used_w) as usize;
+
+        let r2 = vec![
+            Span::styled(prefix, banner_style),
+            Span::styled(msg_str, banner_style),
+            Span::styled(sep, banner_style),
+            Span::styled(focus_lbl, focus_style),
+            Span::styled(" ", banner_style),
+            Span::styled(ack_lbl, banner_style),
+            Span::styled(" ".repeat(pad_w), banner_style),
+        ];
+        if focus_x + focus_w <= rows[2].x + rows[2].width {
+            state.hit_tester.register(
+                Rect {
+                    x: rows[2].x,
+                    y: rows[2].y,
+                    width: prefix_w + msg_w + sep_w + focus_w,
+                    height: 1,
+                },
+                HitTarget::FlashAlertFocus,
+            );
+        }
+        if ack_x + ack_w <= rows[2].x + rows[2].width {
+            state.hit_tester.register(
+                Rect {
+                    x: ack_x,
+                    y: rows[2].y,
+                    width: ack_w,
+                    height: 1,
+                },
+                HitTarget::FlashAlertAck,
+            );
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(r2)).style(Style::default().fg(TELETEXT_WHITE).bg(TELETEXT_RED)),
+            rows[2],
+        );
+        return;
+    }
+
     let mut r2 = Vec::new();
     let mut cx = rows[2].x + 1;
     r2.push(Span::raw(" "));
@@ -422,6 +493,48 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
                     Rect { x: cx, y: rows[2].y, width: sh_w, height: 1 },
                     HitTarget::ToggleMapAircraftShapes,
                 );
+                cx += sh_w;
+            }
+            let dvr_mins = state.dvr.replay_offset_mins;
+            let dvr_lbl = if dvr_mins > 0 {
+                format!("[DVR:-{}d]", dvr_mins)
+            } else {
+                "[DVR:CANLI]".to_string()
+            };
+            let dvr_w = dvr_lbl.chars().count() as u16;
+            if cx + 3 + dvr_w <= rows[2].x + rows[2].width {
+                r2.push(Span::styled(" │ ", Style::default().fg(BORDER_DIM)));
+                cx += 3;
+                r2.push(Span::styled(
+                    dvr_lbl,
+                    Style::default()
+                        .fg(if dvr_mins > 0 { TELETEXT_BLACK } else { TELETEXT_CYAN })
+                        .bg(if dvr_mins > 0 { TELETEXT_YELLOW } else { BG_PRIMARY })
+                        .add_modifier(Modifier::BOLD),
+                ));
+                state.hit_tester.register(
+                    Rect { x: cx, y: rows[2].y, width: dvr_w, height: 1 },
+                    if dvr_mins > 0 {
+                        HitTarget::DvrStep(0)
+                    } else {
+                        HitTarget::DvrStep(-5)
+                    },
+                );
+                cx += dvr_w;
+                let step_lbl = "[-15d]";
+                let step_w = step_lbl.chars().count() as u16;
+                if cx + 1 + step_w <= rows[2].x + rows[2].width {
+                    r2.push(Span::raw(" "));
+                    cx += 1;
+                    r2.push(Span::styled(
+                        step_lbl,
+                        Style::default().fg(FG_SECONDARY).add_modifier(Modifier::BOLD),
+                    ));
+                    state.hit_tester.register(
+                        Rect { x: cx, y: rows[2].y, width: step_w, height: 1 },
+                        HitTarget::DvrStep(-15),
+                    );
+                }
             }
         }
         ActiveView::AirTracks => {

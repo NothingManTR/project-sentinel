@@ -16,6 +16,7 @@ pub struct DynamicTleEntry {
 pub struct CelesTrakClient {
     client: reqwest::Client,
     live_cache: RwLock<Option<(Vec<DynamicTleEntry>, Instant)>>,
+    iss_cache: RwLock<Option<(Option<WhereTheIssResp>, Instant)>>,
 }
 
 impl Default for CelesTrakClient {
@@ -24,7 +25,7 @@ impl Default for CelesTrakClient {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct WhereTheIssResp {
     latitude: f64,
     longitude: f64,
@@ -90,6 +91,24 @@ pub const TLE_CATALOG: &[SatelliteTleEntry] = &[
         line2: "2 49260  98.2141  14.5523 0001165  84.1342 275.9989 14.57103793271091",
     },
     SatelliteTleEntry {
+        norad_id: 39084,
+        name: "LANDSAT 8",
+        line1: "1 39084U 13008A   26320.19709380  .00000265  00000-0  68979-4 0  9992",
+        line2: "2 39084  98.2145  28.3896 0001210  90.5666 269.5671 14.57113055720037",
+    },
+    SatelliteTleEntry {
+        norad_id: 39634,
+        name: "SENTINEL-1A",
+        line1: "1 39634U 14016A   26321.51350887  .00000880  00000-0  19222-3 0  9993",
+        line2: "2 39634  98.1586 326.6197 0001353  87.1871 272.9484 14.60166931672381",
+    },
+    SatelliteTleEntry {
+        norad_id: 31698,
+        name: "TERRASAR-X",
+        line1: "1 31698U 07026A   26314.41932625  .00000732  00000-0  38024-4 0  9993",
+        line2: "2 31698  97.4455 320.0486 0001838  90.3782 269.7663 15.19153228 75429",
+    },
+    SatelliteTleEntry {
         norad_id: 53323,
         name: "COSMOS 2558 (INSPECTOR)",
         line1: "1 53323U 22089A   26255.07407622  .09214690  24429-5  34229-3 0  9995",
@@ -130,15 +149,16 @@ impl CelesTrakClient {
                 .build()
                 .unwrap_or_default(),
             live_cache: RwLock::new(None),
+            iss_cache: RwLock::new(None),
         }
     }
 
-    /// CelesTrak GP API üzerinden canlı 3 satırlı TLE verilerini çeker ve 30 dk önbellekte tutar
+    /// CelesTrak GP API üzerinden canlı 3 satırlı TLE verilerini çeker ve 2 saat (7200 sn) önbellekte tutar
     async fn get_live_or_catalog_tles(&self) -> Vec<DynamicTleEntry> {
         {
             let guard = self.live_cache.read();
             if let Some((entries, ts)) = guard.as_ref() {
-                if ts.elapsed() < Duration::from_secs(1800) && !entries.is_empty() {
+                if ts.elapsed() < Duration::from_secs(7200) && !entries.is_empty() {
                     return entries.clone();
                 }
             }
@@ -202,15 +222,24 @@ impl CelesTrakClient {
         fetched
     }
 
-    /// Canlı ISS koordinatlarını wheretheiss.at üzerinden çeker
+    /// Canlı ISS koordinatlarını wheretheiss.at üzerinden çeker (en az 60 sn önbellekli)
     async fn fetch_live_iss(&self) -> Option<WhereTheIssResp> {
-        let url = "https://api.wheretheiss.at/v1/satellites/25544";
-        if let Ok(resp) = self.client.get(url).send().await {
-            if resp.status().is_success() {
-                return resp.json::<WhereTheIssResp>().await.ok();
+        {
+            let guard = self.iss_cache.read();
+            if let Some((cached, ts)) = guard.as_ref() {
+                if ts.elapsed() < Duration::from_secs(60) {
+                    return cached.clone();
+                }
             }
         }
-        None
+        let url = "https://api.wheretheiss.at/v1/satellites/25544";
+        let fetched = match self.client.get(url).send().await {
+            Ok(resp) if resp.status().is_success() => resp.json::<WhereTheIssResp>().await.ok(),
+            _ => None,
+        };
+        let mut guard = self.iss_cache.write();
+        *guard = Some((fetched.clone(), Instant::now()));
+        fetched
     }
 
     /// Verilen UTC zamanı için Greenwich Ortalama Yıldız Zamanı (GMST) açısını (radyan) hesaplar
@@ -413,5 +442,26 @@ mod tests {
             !all_above_horizon,
             "Not all LEO/GEO satellites should simultaneously have el_deg > 0.0 from a single station"
         );
+    }
+
+    #[test]
+    fn test_recon_and_sar_catalog_entries_propagate() {
+        let client = CelesTrakClient::default();
+        let sats = client.propagate_catalog_at(41.0082, 28.9784, Utc::now(), None);
+        for expected in [
+            "SENTINEL-1A",
+            "TERRASAR-X",
+            "LANDSAT 8",
+            "GOKTURK 1A",
+            "GOKTURK 2",
+            "COSMOS 2558",
+            "NOAA 20",
+        ] {
+            assert!(
+                sats.iter().any(|s| s.name.contains(expected)),
+                "Missing expected satellite {} in propagated catalog",
+                expected
+            );
+        }
     }
 }

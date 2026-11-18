@@ -111,6 +111,8 @@ pub struct ShodanHostInfo {
     pub isp: Option<String>,
     pub country: Option<String>,
     pub city: Option<String>,
+    #[serde(default)]
+    pub subdomains: Vec<String>,
 }
 
 /// NASA FIRMS Canlı Termal Sıcak Nokta & Patlama Verisi
@@ -508,4 +510,87 @@ pub struct AirspaceWarning {
     pub center_lat: f64,
     pub center_lon: f64,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DarkShipTrack {
+    pub id: String,
+    pub callsign: String,
+    pub last_lat: f64,
+    pub last_lon: f64,
+    pub dr_lat: f64,
+    pub dr_lon: f64,
+    pub sog_kts: f64,
+    pub cog_deg: f64,
+    pub silent_mins: u64,
+    pub is_military: bool,
+    pub vessel_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StraitGateStat {
+    pub id: String,
+    pub name: String,
+    pub center_lat: f64,
+    pub center_lon: f64,
+    pub gate_a: (f64, f64),
+    pub gate_b: (f64, f64),
+    pub fwd_label: String,
+    pub rev_label: String,
+    pub fwd_count: u32,
+    pub rev_count: u32,
+    pub mil_count: u32,
+    pub tanker_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AarPair {
+    pub tanker_id: String,
+    pub tanker_callsign: String,
+    pub receiver_id: String,
+    pub receiver_callsign: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_ft: f64,
+    pub dist_km: f64,
+    pub is_locked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TacticalRuler {
+    pub pin_a: (f64, f64, String),
+    pub pin_b: Option<(f64, f64, String)>,
+    pub threat_ring_km: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EscalationMetric {
+    pub country_code: String,
+    pub country_name: String,
+    pub evi_score: u32,
+    pub delta_pct: i32,
+    pub event_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReconWindow {
+    pub sat_name: String,
+    pub norad_id: u32,
+    pub sensor_type: String,
+    pub target_name: String,
+    pub target_lat: f64,
+    pub target_lon: f64,
+    pub aos_secs: u64,
+    pub max_el_deg: f64,
+    pub cloud_blocked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlashAlertBanner {
+    pub message: String,
+    pub severity: ThreatSeverity,
+    pub lat: f64,
+    pub lon: f64,
+    pub target_id: Option<String>,
+    pub acked: bool,
 }

@@ -88,10 +88,10 @@ pub fn render_satint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     frame.render_widget(sat_map_block, left_chunks[1]);
     render_p100_map(frame, sat_map_inner, state);
 
-    // Sag: Uydu Tablosu + Secili Uydu Telemetri Ozeti
+    // Sag: Uydu Tablosu + Secili Uydu Telemetri & Kesif Penceresi Ozeti
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(10), Constraint::Length(6)])
+        .constraints([Constraint::Min(10), Constraint::Length(9)])
         .split(main_chunks[1]);
 
     let header_cells = ["UYDU", "NORAD", "IRTIFA", "HIZ", "AZ / EL", "GECIS"]
@@ -200,7 +200,7 @@ pub fn render_satint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
         .satellites
         .get(state.selected_row)
         .or_else(|| state.satellites.first());
-    let detail_lines = if let Some(s) = sel_sat {
+    let mut detail_lines = if let Some(s) = sel_sat {
         vec![
             Line::from(vec![
                 Span::styled("SECILI UYDU : ", Style::default().fg(FG_MUTED)),
@@ -229,6 +229,58 @@ pub fn render_satint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     } else {
         vec![Line::from(Span::styled("CelesTrak uydu verisi yukleniyor...", Style::default().fg(FG_MUTED)))]
     };
+
+    let mut recon: Vec<_> = state.recon_windows.iter().collect();
+    recon.sort_by_key(|r| r.aos_secs);
+    if recon.is_empty() {
+        detail_lines.push(Line::from(vec![
+            Span::styled(
+                "[RECON]     : ",
+                Style::default().fg(TELETEXT_MAGENTA).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Kesif penceresi hesaplaniyor (SGP4 + Bulut)...",
+                Style::default().fg(FG_MUTED),
+            ),
+        ]));
+    } else {
+        detail_lines.push(Line::from(Span::styled(
+            "--- YAKLASAN KESIF UYDUSU PENCERELERI (EO/SAR/SIGINT) ---",
+            Style::default().fg(BORDER_ACTIVE).add_modifier(Modifier::BOLD),
+        )));
+        for rw in recon.into_iter().take(3) {
+            let aos_str = if rw.aos_secs == 0 {
+                "AKTIF".to_string()
+            } else if rw.aos_secs < 60 {
+                format!("{}sn", rw.aos_secs)
+            } else {
+                format!("{}dk", rw.aos_secs / 60)
+            };
+            let cloud_str = if rw.cloud_blocked {
+                "BULUT:KAPALI"
+            } else {
+                "BULUT:ACIK"
+            };
+            detail_lines.push(Line::from(vec![
+                Span::styled(
+                    "[RECON] ",
+                    Style::default().fg(TELETEXT_MAGENTA).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{} {} -> ", rw.sat_name, rw.sensor_type),
+                    Style::default().fg(TELETEXT_CYAN).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("AOS:{} El:{:.0}° ", aos_str, rw.max_el_deg),
+                    Style::default().fg(if rw.aos_secs <= 300 { TELETEXT_YELLOW } else { FG_PRIMARY }),
+                ),
+                Span::styled(
+                    format!("({})", cloud_str),
+                    Style::default().fg(if rw.cloud_blocked { TELETEXT_RED } else { TELETEXT_GREEN }),
+                ),
+            ]));
+        }
+    }
 
     let aos_p = Paragraph::new(detail_lines).block(
         Block::default()

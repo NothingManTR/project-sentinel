@@ -1,7 +1,7 @@
-use argus_core::types::AcledEvent;
+use argus_core::types::{AcledEvent, EscalationMetric};
 use flate2::read::DeflateDecoder;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,8 @@ pub struct AcledClient {
     cached_token: parking_lot::RwLock<Option<(String, Instant, Duration)>>,
     last_gdelt_zip_url: parking_lot::RwLock<Option<String>>,
     cached_gdelt_events: parking_lot::RwLock<Vec<AcledEvent>>,
+    cached_gdelt_metrics: parking_lot::RwLock<Vec<EscalationMetric>>,
+    prev_gdelt_counts: parking_lot::RwLock<HashMap<String, u32>>,
 }
 
 impl AcledClient {
@@ -39,6 +41,8 @@ impl AcledClient {
             cached_token: parking_lot::RwLock::new(None),
             last_gdelt_zip_url: parking_lot::RwLock::new(None),
             cached_gdelt_events: parking_lot::RwLock::new(Vec::new()),
+            cached_gdelt_metrics: parking_lot::RwLock::new(Vec::new()),
+            prev_gdelt_counts: parking_lot::RwLock::new(HashMap::new()),
         }
     }
 
@@ -88,6 +92,15 @@ impl AcledClient {
     /// ACLED OAuth API üzerinden çatışma olaylarını çeker; erişim yoksa veya 403/401 dönerse
     /// anahtarsız canlı GDELT v2 15-dakikalık CAMEO çatışma akışına düşer.
     pub async fn fetch_recent_conflicts(&self) -> anyhow::Result<Vec<AcledEvent>> {
+        self.fetch_recent_conflicts_with_metrics()
+            .await
+            .map(|(events, _)| events)
+    }
+
+    /// ACLED / GDELT v2 üzerinden hem kinetik çatışma olaylarını hem de ülke bazlı EVI tırmanma metriklerini döndürür.
+    pub async fn fetch_recent_conflicts_with_metrics(
+        &self,
+    ) -> anyhow::Result<(Vec<AcledEvent>, Vec<EscalationMetric>)> {
         if let Some(token) = self.get_valid_token().await {
             let url = format!("{}?limit=30", self.api_url);
             if let Ok(resp) = self.client.get(&url).bearer_auth(&token).send().await {
@@ -115,7 +128,12 @@ impl AcledClient {
                                 }
                             }
                             if !events.is_empty() {
-                                return Ok(events);
+                                let metrics = self
+                                    .fetch_gdelt_live_conflicts_with_metrics()
+                                    .await
+                                    .map(|(_, m)| m)
+                                    .unwrap_or_default();
+                                return Ok((events, metrics));
                             }
                         }
                     }
@@ -123,10 +141,12 @@ impl AcledClient {
             }
         }
 
-        self.fetch_gdelt_live_conflicts().await
+        self.fetch_gdelt_live_conflicts_with_metrics().await
     }
 
-    async fn fetch_gdelt_live_conflicts(&self) -> anyhow::Result<Vec<AcledEvent>> {
+    pub async fn fetch_gdelt_live_conflicts_with_metrics(
+        &self,
+    ) -> anyhow::Result<(Vec<AcledEvent>, Vec<EscalationMetric>)> {
         let lu_text = self
             .client
             .get("http://data.gdeltproject.org/gdeltv2/lastupdate.txt")
@@ -146,8 +166,9 @@ impl AcledClient {
             let last_url = self.last_gdelt_zip_url.read();
             if last_url.as_deref() == Some(export_url.as_str()) {
                 let cached = self.cached_gdelt_events.read();
-                if !cached.is_empty() {
-                    return Ok(cached.clone());
+                let cached_metrics = self.cached_gdelt_metrics.read();
+                if !cached.is_empty() || !cached_metrics.is_empty() {
+                    return Ok((cached.clone(), cached_metrics.clone()));
                 }
             }
         }
@@ -155,13 +176,34 @@ impl AcledClient {
         let zip_bytes = self.client.get(&export_url).send().await?.bytes().await?;
         let csv_bytes = extract_first_zip_entry(&zip_bytes)?;
         let csv_text = String::from_utf8_lossy(&csv_bytes);
-        let events = parse_gdelt_export_csv(&csv_text);
+        let (events, mut metrics) = parse_gdelt_with_metrics(&csv_text);
 
-        if !events.is_empty() {
+        {
+            let prev = self.prev_gdelt_counts.read();
+            if !prev.is_empty() {
+                for m in &mut metrics {
+                    if let Some(&old) = prev.get(&m.country_code) {
+                        if old > 0 {
+                            m.delta_pct = (((m.event_count as i32) - (old as i32)) * 100)
+                                / (old as i32);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !events.is_empty() || !metrics.is_empty() {
             *self.last_gdelt_zip_url.write() = Some(export_url);
             *self.cached_gdelt_events.write() = events.clone();
+            *self.cached_gdelt_metrics.write() = metrics.clone();
+            if !metrics.is_empty() {
+                let mut prev = self.prev_gdelt_counts.write();
+                for m in &metrics {
+                    prev.insert(m.country_code.clone(), m.event_count);
+                }
+            }
         }
-        Ok(events)
+        Ok((events, metrics))
     }
 }
 
@@ -224,10 +266,60 @@ fn cameo_label(code: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// GDELT v2 61-sütunlu TSV çıktısından yalnızca askeri/kinetik çatışma olaylarını `AcledEvent` olarak ayıklar.
-pub fn parse_gdelt_export_csv(csv_text: &str) -> Vec<AcledEvent> {
+/// GDELT FIPS 10-4 ulke kodunu ISO2 koda ve Turkce ulke adina cevirir.
+pub fn fips_to_iso2_name(fips: &str) -> (&'static str, &'static str) {
+    match fips.trim().to_ascii_uppercase().as_str() {
+        "TU" => ("TR", "Turkiye"),
+        "UP" => ("UA", "Ukrayna"),
+        "RS" => ("RU", "Rusya"),
+        "IS" => ("IL", "Israil"),
+        "IR" => ("IR", "Iran"),
+        "SY" => ("SY", "Suriye"),
+        "IZ" => ("IQ", "Irak"),
+        "YM" => ("YE", "Yemen"),
+        "LE" => ("LB", "Lubnan"),
+        "EG" => ("EG", "Misir"),
+        "SU" => ("SD", "Sudan"),
+        "TW" => ("TW", "Tayvan"),
+        "CH" => ("CN", "Cin"),
+        "KS" => ("KR", "G.Kore"),
+        "KN" => ("KP", "K.Kore"),
+        "PK" => ("PK", "Pakistan"),
+        "IN" => ("IN", "Hindistan"),
+        "GR" => ("GR", "Yunanistan"),
+        "US" => ("US", "ABD"),
+        "UK" => ("GB", "Birlesik Krallik"),
+        "GM" => ("DE", "Almanya"),
+        "FR" => ("FR", "Fransa"),
+        "IT" => ("IT", "Italya"),
+        "SA" => ("SA", "S.Arabistan"),
+        "AE" => ("AE", "BAE"),
+        "LY" => ("LY", "Libya"),
+        "AF" => ("AF", "Afganistan"),
+        "JA" => ("JP", "Japonya"),
+        "PL" => ("PL", "Polonya"),
+        "RO" => ("RO", "Romanya"),
+        "BU" => ("BG", "Bulgaristan"),
+        "GG" => ("GE", "Gurcistan"),
+        "AJ" => ("AZ", "Azerbaycan"),
+        "BY" => ("BY", "Belarus"),
+        _ => ("", ""),
+    }
+}
+
+struct CountryEviAcc {
+    name: &'static str,
+    event_count: u32,
+    mat_count: u32,
+    weighted_sum: f64,
+}
+
+/// Tek CSV taramasinda hem askeri/kinetik catisma olaylarini (maks 35) hem de
+/// QuadClass 3/4 olaylarindan ulke bazli EVI metriklerini (azalan sira, top 10) ayiklar.
+pub fn parse_gdelt_with_metrics(raw_csv: &str) -> (Vec<AcledEvent>, Vec<EscalationMetric>) {
     let mut events = Vec::new();
     let mut seen_keys: HashSet<String> = HashSet::new();
+    let mut country_stats: HashMap<&'static str, CountryEviAcc> = HashMap::new();
 
     let mil_types = ["MIL", "REB", "INS", "SEP", "UAF", "TER", "MOD"];
     let kinetic_kw = [
@@ -249,13 +341,37 @@ pub fn parse_gdelt_export_csv(csv_text: &str) -> Vec<AcledEvent> {
         "frontline",
     ];
 
-    for line in csv_text.lines() {
+    for line in raw_csv.lines() {
         let cols: Vec<&str> = line.split('\t').collect();
         if cols.len() < 61 {
             continue;
         }
-        // Sadece QuadClass=4 (Maddi Çatışma) ve koordinatlı olaylar
-        if cols[29] != "4" {
+        let quad = cols[29].trim();
+        if quad != "3" && quad != "4" {
+            continue;
+        }
+
+        let goldstein: f64 = cols[30].trim().parse().unwrap_or(0.0);
+        let fips = cols[53].trim();
+        let (iso2, cname) = fips_to_iso2_name(fips);
+        if !iso2.is_empty() {
+            let acc = country_stats.entry(iso2).or_insert(CountryEviAcc {
+                name: cname,
+                event_count: 0,
+                mat_count: 0,
+                weighted_sum: 0.0,
+            });
+            acc.event_count += 1;
+            if quad == "4" {
+                acc.mat_count += 1;
+                acc.weighted_sum += 3.0 + (-goldstein).clamp(0.0, 10.0) * 0.4;
+            } else {
+                acc.weighted_sum += 1.0 + (-goldstein).clamp(0.0, 10.0) * 0.2;
+            }
+        }
+
+        // Sadece QuadClass=4 (Maddi Çatışma) ve koordinatlı olaylar (events maks 35, ama EVI taramasi kesilmez)
+        if quad != "4" || events.len() >= 35 {
             continue;
         }
         let root = cols[28];
@@ -279,7 +395,6 @@ pub fn parse_gdelt_export_csv(csv_text: &str) -> Vec<AcledEvent> {
 
         let has_mil_actor = mil_types.contains(&a1_type) || mil_types.contains(&a2_type);
         let has_kinetic_url = kinetic_kw.iter().any(|k| url_lower.contains(k));
-        let goldstein: f64 = cols[30].trim().parse().unwrap_or(0.0);
 
         if !(has_kinetic_url || (has_mil_actor && goldstein <= -7.0)) {
             continue;
@@ -318,8 +433,10 @@ pub fn parse_gdelt_export_csv(csv_text: &str) -> Vec<AcledEvent> {
         } else {
             raw_date.to_string()
         };
-        let country = if !cols[53].trim().is_empty() {
-            cols[53].trim().to_string()
+        let country = if !iso2.is_empty() {
+            iso2.to_string()
+        } else if !fips.is_empty() {
+            fips.to_string()
         } else {
             "-".to_string()
         };
@@ -341,13 +458,40 @@ pub fn parse_gdelt_export_csv(csv_text: &str) -> Vec<AcledEvent> {
             fatalities: 0,
             notes: format!("GDELT v2 Kaynak: {}", url),
         });
-
-        if events.len() >= 35 {
-            break;
-        }
     }
 
-    events
+    let mut metrics: Vec<EscalationMetric> = country_stats
+        .into_iter()
+        .map(|(code, st)| {
+            let evi_score = (100.0 * (1.0 - (-st.weighted_sum / 90.0).exp()))
+                .round()
+                .clamp(1.0, 100.0) as u32;
+            let mat_ratio_pct = (st.mat_count as f64 / st.event_count.max(1) as f64) * 100.0;
+            let delta_pct = (mat_ratio_pct - 30.0).round() as i32;
+            EscalationMetric {
+                country_code: code.to_string(),
+                country_name: st.name.to_string(),
+                evi_score,
+                delta_pct,
+                event_count: st.event_count,
+            }
+        })
+        .collect();
+
+    metrics.sort_by(|a, b| {
+        b.evi_score
+            .cmp(&a.evi_score)
+            .then_with(|| b.event_count.cmp(&a.event_count))
+            .then_with(|| a.country_code.cmp(&b.country_code))
+    });
+    metrics.truncate(10);
+
+    (events, metrics)
+}
+
+/// GDELT v2 61-sütunlu TSV çıktısından yalnızca askeri/kinetik çatışma olaylarını `AcledEvent` olarak ayıklar.
+pub fn parse_gdelt_export_csv(csv_text: &str) -> Vec<AcledEvent> {
+    parse_gdelt_with_metrics(csv_text).0
 }
 
 #[cfg(test)]
@@ -425,6 +569,58 @@ mod tests {
         assert_eq!(events[0].event_id, "GDELT-123456");
         assert_eq!(events[0].event_type, "HAVA SALDIRISI");
         assert_eq!(events[0].country, "SY");
+    }
+
+    #[test]
+    fn test_fips_to_iso2_name_and_gdelt_evi_past_35_cutoff() {
+        assert_eq!(fips_to_iso2_name("TU"), ("TR", "Turkiye"));
+        assert_eq!(fips_to_iso2_name("UP"), ("UA", "Ukrayna"));
+        assert_eq!(fips_to_iso2_name("RS"), ("RU", "Rusya"));
+        assert_eq!(fips_to_iso2_name("IS"), ("IL", "Israil"));
+        assert_eq!(fips_to_iso2_name("UK"), ("GB", "Birlesik Krallik"));
+        assert_eq!(fips_to_iso2_name("CH"), ("CN", "Cin"));
+
+        let mut lines = Vec::new();
+        for i in 0..40 {
+            let mut cols = vec![String::new(); 61];
+            cols[0] = (1000 + i).to_string();
+            cols[1] = "20261118".to_string();
+            cols[6] = "FORCE".to_string();
+            cols[12] = "MIL".to_string();
+            cols[26] = "195".to_string();
+            cols[28] = "19".to_string();
+            cols[29] = "4".to_string();
+            cols[30] = "-10.0".to_string();
+            cols[31] = "5".to_string();
+            cols[52] = "Zone".to_string();
+            cols[53] = "UP".to_string();
+            cols[56] = format!("{:.2}", 34.0 + (i as f64) * 0.1);
+            cols[57] = "35.0".to_string();
+            cols[60] = "https://example.org/airstrike".to_string();
+            lines.push(cols.join("\t"));
+        }
+        // 35 kesmesinden sonra gelen TU QuadClass 3 olaylari yine de EVI'ye girmeli
+        for i in 0..5 {
+            let mut cols = vec![String::new(); 61];
+            cols[0] = (2000 + i).to_string();
+            cols[1] = "20261118".to_string();
+            cols[26] = "130".to_string();
+            cols[28] = "13".to_string();
+            cols[29] = "3".to_string();
+            cols[30] = "-4.0".to_string();
+            cols[53] = "TU".to_string();
+            lines.push(cols.join("\t"));
+        }
+
+        let csv = lines.join("\n");
+        let (events, metrics) = parse_gdelt_with_metrics(&csv);
+        assert_eq!(events.len(), 35);
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(metrics[0].country_code, "UA");
+        assert_eq!(metrics[0].event_count, 40);
+        assert_eq!(metrics[1].country_code, "TR");
+        assert_eq!(metrics[1].event_count, 5);
+        assert!(metrics[0].evi_score > metrics[1].evi_score);
     }
 
     #[tokio::test]

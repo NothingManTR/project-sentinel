@@ -3,7 +3,7 @@ use crate::photo_ui::PhotoRenderCtx;
 use crate::ui::render_main_ui;
 use argus_core::mouse::HitTarget;
 use argus_core::state::AppState;
-use argus_core::types::{ActiveView, AircraftMediaStatus, Domain, TargetTrack};
+use argus_core::types::{ActiveView, AircraftMediaStatus, Domain, TacticalRuler, TargetTrack};
 use chrono::Utc;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use parking_lot::RwLock;
@@ -225,8 +225,9 @@ impl App {
                     Self::append_dialog_to_notepad(&mut st);
                     self.audio.play(SoundEffect::Blip);
                 }
-                KeyCode::Char(c) if is_ai_dialog && ('1'..='3').contains(&c) => {
-                    st.ai_mode = (c as usize) - ('1' as usize);
+                KeyCode::Char(c) if is_ai_dialog && (('1'..='3').contains(&c) || c == '5') => {
+                    let m = if c == '5' { 4 } else { (c as usize) - ('1' as usize) };
+                    st.ai_mode = m;
                     Self::spawn_ai_sitrep(&self.state, &mut st, true);
                     self.audio.play(SoundEffect::Blip);
                 }
@@ -1621,6 +1622,107 @@ impl App {
                                 self.audio.play(SoundEffect::Click);
                             }
                         }
+                        HitTarget::StraitGate(idx) => {
+                            if let Some(g) = st.strait_gates.get(idx).cloned() {
+                                st.follow_target_id = None;
+                                st.map_center_lat = g.center_lat;
+                                st.map_center_lon = g.center_lon;
+                                st.map_zoom = 5.5;
+                                st.live_status = format!(
+                                    "BOGAZ ODAK: {} (K->G:{} G->K:{})",
+                                    g.name, g.fwd_count, g.rev_count
+                                );
+                                self.audio.play(SoundEffect::Click);
+                            }
+                        }
+                        HitTarget::FlashAlertFocus => {
+                            if let Some(f) = st.active_flash_alert.clone() {
+                                st.follow_target_id = None;
+                                st.map_center_lat = f.lat;
+                                st.map_center_lon = f.lon;
+                                st.map_zoom = st.map_zoom.max(4.5);
+                                if let Some(tid) = f.target_id {
+                                    st.selected_target_id = Some(tid);
+                                }
+                                st.set_view(ActiveView::Dashboard);
+                                self.audio.play(SoundEffect::Blip);
+                            }
+                        }
+                        HitTarget::FlashAlertAck => {
+                            if let Some(f) = &mut st.active_flash_alert {
+                                f.acked = true;
+                            }
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::DvrStep(step) => {
+                            st.dvr.step_offset(step);
+                            st.live_status = if st.dvr.replay_offset_mins == 0 {
+                                "DVR: CANLI AKIS".to_string()
+                            } else {
+                                format!("DVR REPLAY: -{} dakika", st.dvr.replay_offset_mins)
+                            };
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::RulerSetPinA => {
+                            let pin_a = Self::resolve_ruler_pin(&mut st);
+                            let lbl_a = pin_a.2.clone();
+                            if let Some(ruler) = &mut st.tactical_ruler {
+                                ruler.pin_a = pin_a;
+                            } else {
+                                st.tactical_ruler = Some(TacticalRuler {
+                                    pin_a,
+                                    pin_b: None,
+                                    threat_ring_km: None,
+                                });
+                            }
+                            st.live_status = format!("CETVEL PIN-A: {}", lbl_a);
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::RulerSetPinB => {
+                            let pin_b = Self::resolve_ruler_pin(&mut st);
+                            let lbl_b = pin_b.2.clone();
+                            let st_lat = st.station_lat;
+                            let st_lon = st.station_lon;
+                            if let Some(ruler) = &mut st.tactical_ruler {
+                                ruler.pin_b = Some(pin_b);
+                            } else {
+                                st.tactical_ruler = Some(TacticalRuler {
+                                    pin_a: (st_lat, st_lon, "ISTASYON".to_string()),
+                                    pin_b: Some(pin_b),
+                                    threat_ring_km: None,
+                                });
+                            }
+                            st.live_status = format!("CETVEL PIN-B: {}", lbl_b);
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::RulerCycleRing => {
+                            let st_lat = st.station_lat;
+                            let st_lon = st.station_lon;
+                            let (next_ring, pin_lbl) = {
+                                let ruler = st.tactical_ruler.get_or_insert_with(|| TacticalRuler {
+                                    pin_a: (st_lat, st_lon, "ISTASYON".to_string()),
+                                    pin_b: None,
+                                    threat_ring_km: None,
+                                });
+                                ruler.threat_ring_km = match ruler.threat_ring_km {
+                                    None => Some(45.0),
+                                    Some(r) if r < 100.0 => Some(160.0),
+                                    Some(r) if r < 300.0 => Some(380.0),
+                                    _ => None,
+                                };
+                                (ruler.threat_ring_km, ruler.pin_a.2.clone())
+                            };
+                            st.live_status = match next_ring {
+                                Some(r) => format!("TEHDIT HALKASI: {:.0} km ({})", r, pin_lbl),
+                                None => "TEHDIT HALKASI KAPALI".to_string(),
+                            };
+                            self.audio.play(SoundEffect::Click);
+                        }
+                        HitTarget::RulerClear => {
+                            st.tactical_ruler = None;
+                            st.live_status = "TAKTIK CETVEL TEMIZLENDI".to_string();
+                            self.audio.play(SoundEffect::Click);
+                        }
                         _ => {}
                     }
                 }
@@ -1875,7 +1977,7 @@ impl App {
             if let Some((ts, rep)) = &st.ai_last_report {
                 let mut lines: Vec<String> = rep.lines().map(|l| l.to_string()).collect();
                 lines.push(format!(
-                    "[*] Onbellek raporu ({} UTC) — Yenilemek icin [R] veya mod icin [1-4] secin.",
+                    "[*] Onbellek raporu ({} UTC) — Yenilemek icin [R] veya mod icin [1-5] secin.",
                     ts.format("%H:%M")
                 ));
                 st.open_dialog(
@@ -2778,6 +2880,19 @@ impl App {
         }
     }
 
+    fn resolve_ruler_pin(st: &mut AppState) -> (f64, f64, String) {
+        if let Some(t) = st.inspected_target() {
+            let lbl = if t.callsign.trim().is_empty() {
+                t.id
+            } else {
+                t.callsign
+            };
+            (t.geo.lat, t.geo.lon, lbl)
+        } else {
+            (st.map_center_lat, st.map_center_lon, "HARITA MRK".to_string())
+        }
+    }
+
     fn focus_selected_on_map(st: &mut AppState) {
         if let Some(id) = st.selected_target_id.clone() {
             if let Some(t) = st
@@ -2854,7 +2969,7 @@ impl App {
                 "> [G / F / B]    : Haritada Odakla (G) | Takip Kilidi (F) | Izleme Listesi (B)".to_string(),
                 "> [x:Ntm]        : NOTAM / SIGMET / GPS-JAM Hava Sahasi Cokgen Katmani".to_string(),
                 "--- 3. GEMINI AI ANALIZ & DOSYA KAYIT KISAYOLLARI ---".to_string(),
-                "> [Shift+A/Ctrl+A]: AI SITREP ac (1:Kuresel 2:Hedef 3:Bolge 4:Ozel Soru R:Yenile)".to_string(),
+                "> [Shift+A/Ctrl+A]: AI SITREP ac (1:Kuresel 2:Hedef 3:Bolge 4:Ozel 5:OPFOR R:Yenile)".to_string(),
                 "> [K / Ctrl+S]   : Acik AI raporunu/dosyasini dogrudan reports/*.md kaydet".to_string(),
                 "> [H] / [E]      : HTML Brifing Paketi olustur (H) | notes.txt icine ekle (E)".to_string(),
                 "--- 4. GERCEK KIWISDR KISA DALGA RADYO KONTROLLERI ---".to_string(),

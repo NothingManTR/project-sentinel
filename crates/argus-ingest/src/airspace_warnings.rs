@@ -140,17 +140,22 @@ pub fn active_conflict_notam_zones() -> Vec<AirspaceWarning> {
 /// Canlı ADS-B `NIC < 5` GPS Jamming odaklarını harita üzerinde kapalı sekizgen çokgenlere çevirir.
 pub fn jam_zones_to_polygons(zones: &[(f64, f64, f64, String)]) -> Vec<AirspaceWarning> {
     let mut out = Vec::new();
-    for (idx, (lat, lon, radius_km, lbl)) in zones.iter().enumerate() {
-        let r_km = radius_km.clamp(35.0, 320.0);
+    for (idx, (center_lat, center_lon, radius, lbl)) in zones.iter().enumerate() {
+        let r_km = (if *radius <= 5.0 {
+            *radius * 111.0 * center_lat.to_radians().cos().abs().max(0.35)
+        } else {
+            *radius
+        })
+        .clamp(35.0, 320.0);
         let d_lat = r_km / 111.0;
-        let cos_lat = lat.to_radians().cos().abs().max(0.2);
+        let cos_lat = center_lat.to_radians().cos().abs().max(0.2);
         let d_lon = r_km / (111.32 * cos_lat);
 
         let mut poly = Vec::with_capacity(9);
         for k in 0..=8 {
             let theta = (k as f64) * std::f64::consts::TAU / 8.0;
-            let p_lon = (lon + d_lon * theta.cos()).clamp(-180.0, 180.0);
-            let p_lat = (lat + d_lat * theta.sin()).clamp(-85.0, 85.0);
+            let p_lon = (center_lon + d_lon * theta.cos()).clamp(-180.0, 180.0);
+            let p_lat = (center_lat + d_lat * theta.sin()).clamp(-85.0, 85.0);
             poly.push((p_lon, p_lat));
         }
         out.push(AirspaceWarning {
@@ -160,9 +165,9 @@ pub fn jam_zones_to_polygons(zones: &[(f64, f64, f64, String)]) -> Vec<AirspaceW
             hazard: "GNSS / GPS KARISTIRMA (NIC<5)".to_string(),
             top_fl: Some(450),
             polygon: poly,
-            center_lat: *lat,
-            center_lon: *lon,
-            summary: format!("{} ({:.2}N, {:.2}E | r={:.0}km)", lbl, lat, lon, r_km),
+            center_lat: *center_lat,
+            center_lon: *center_lon,
+            summary: format!("{} ({:.2}N, {:.2}E | r={:.0}km)", lbl, center_lat, center_lon, r_km),
         });
     }
     out
@@ -219,5 +224,10 @@ mod tests {
         assert_eq!(jams.len(), 1);
         assert_eq!(jams[0].kind, "GPS-JAM");
         assert_eq!(jams[0].polygon.len(), 9);
+        assert!(jams[0].summary.contains("r=120km"));
+
+        let deg_jams = jam_zones_to_polygons(&[(35.0, 34.0, 1.2, "NIC Jam".to_string())]);
+        assert_eq!(deg_jams.len(), 1);
+        assert!(deg_jams[0].summary.contains("r=109km"), "got {}", deg_jams[0].summary);
     }
 }

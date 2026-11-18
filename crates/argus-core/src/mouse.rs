@@ -59,6 +59,14 @@ pub enum HitTarget {
     NotepadAction(usize),
     AlertItem(usize),
     FusionAlert(usize),
+    StraitGate(usize),
+    FlashAlertFocus,
+    FlashAlertAck,
+    DvrStep(i32),
+    RulerSetPinA,
+    RulerSetPinB,
+    RulerCycleRing,
+    RulerClear,
 }
 
 #[derive(Debug, Clone, Default)]

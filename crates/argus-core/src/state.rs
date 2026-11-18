@@ -28,11 +28,11 @@ impl<T> RingBuffer<T> {
         self.buffer.push_back(item);
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &T> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &T> + ExactSizeIterator {
         self.buffer.iter()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+    pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut T> + ExactSizeIterator {
         self.buffer.iter_mut()
     }
 
@@ -78,6 +78,31 @@ impl<T> RingBuffer<T> {
         } else if self.buffer.len() < self.capacity {
             // Kapasite dolana kadar sona ekle; kapasite dolduğunda pop_front() yapıp
             // mevcut tablo satırlarının indekslerini kaydırma! (Eski kayıtlar prune_stale_targets ile temizlenir)
+            self.buffer.push_back(item);
+        }
+    }
+
+    pub fn upsert_or_evict_priority<F, P>(
+        &mut self,
+        item: T,
+        is_same: F,
+        mut is_low_priority: P,
+    ) where
+        F: FnMut(&T) -> bool,
+        P: FnMut(&T) -> bool,
+    {
+        if self.capacity == 0 {
+            return;
+        }
+        if let Some(idx) = self.buffer.iter().position(is_same) {
+            self.buffer[idx] = item;
+        } else if self.buffer.len() < self.capacity {
+            self.buffer.push_back(item);
+        } else if let Some(evict_idx) = self.buffer.iter().position(&mut is_low_priority) {
+            self.buffer.remove(evict_idx);
+            self.buffer.push_back(item);
+        } else if !is_low_priority(&item) {
+            self.buffer.pop_front();
             self.buffer.push_back(item);
         }
     }
@@ -144,6 +169,16 @@ pub struct AppState {
     pub track_anomalies: HashMap<String, String>,
     pub fusion_clusters: Vec<FusionCluster>,
     pub airspace_warnings: Vec<AirspaceWarning>,
+    pub dark_ships: Vec<DarkShipTrack>,
+    pub strait_gates: Vec<StraitGateStat>,
+    pub strait_transit_cooldown: HashMap<(String, String), chrono::DateTime<chrono::Utc>>,
+    pub vessel_prev_pos: HashMap<String, (f64, f64, chrono::DateTime<chrono::Utc>)>,
+    pub aar_pairs: Vec<AarPair>,
+    pub tactical_ruler: Option<TacticalRuler>,
+    pub escalation_metrics: Vec<EscalationMetric>,
+    pub recon_windows: Vec<ReconWindow>,
+    pub active_flash_alert: Option<FlashAlertBanner>,
+    pub dvr: crate::dvr::DvrTimeline,
     pub ai_analysis_running: bool,
     pub ai_last_report: Option<(chrono::DateTime<chrono::Utc>, String)>,
     pub ai_mode: usize, // 0: Kuresel Flashpoint, 1: Secili Hedef, 2: Bolgesel Kriz, 3: Ozel Soru
@@ -305,6 +340,101 @@ impl AppState {
             track_anomalies: HashMap::new(),
             fusion_clusters: Vec::new(),
             airspace_warnings: Vec::new(),
+            dark_ships: Vec::new(),
+            strait_gates: vec![
+                StraitGateStat {
+                    id: "IST".to_string(),
+                    name: "Istanbul Bogazi".to_string(),
+                    center_lat: 41.12,
+                    center_lon: 29.07,
+                    gate_a: (41.13, 29.02),
+                    gate_b: (41.11, 29.12),
+                    fwd_label: "K->G".to_string(),
+                    rev_label: "G->K".to_string(),
+                    fwd_count: 0,
+                    rev_count: 0,
+                    mil_count: 0,
+                    tanker_count: 0,
+                },
+                StraitGateStat {
+                    id: "CAN".to_string(),
+                    name: "Canakkale Bogazi".to_string(),
+                    center_lat: 40.15,
+                    center_lon: 26.40,
+                    gate_a: (40.20, 26.32),
+                    gate_b: (40.10, 26.48),
+                    fwd_label: "K->G".to_string(),
+                    rev_label: "G->K".to_string(),
+                    fwd_count: 0,
+                    rev_count: 0,
+                    mil_count: 0,
+                    tanker_count: 0,
+                },
+                StraitGateStat {
+                    id: "HRM".to_string(),
+                    name: "Hurmuz Bogazi".to_string(),
+                    center_lat: 26.56,
+                    center_lon: 56.25,
+                    gate_a: (26.95, 56.15),
+                    gate_b: (26.20, 56.45),
+                    fwd_label: "GIRIS".to_string(),
+                    rev_label: "CIKIS".to_string(),
+                    fwd_count: 0,
+                    rev_count: 0,
+                    mil_count: 0,
+                    tanker_count: 0,
+                },
+                StraitGateStat {
+                    id: "BAB".to_string(),
+                    name: "Bab el-Mandeb".to_string(),
+                    center_lat: 12.60,
+                    center_lon: 43.35,
+                    gate_a: (12.45, 43.15),
+                    gate_b: (12.75, 43.55),
+                    fwd_label: "KUZEY".to_string(),
+                    rev_label: "GUNEY".to_string(),
+                    fwd_count: 0,
+                    rev_count: 0,
+                    mil_count: 0,
+                    tanker_count: 0,
+                },
+                StraitGateStat {
+                    id: "SUV".to_string(),
+                    name: "Suveys Kanali".to_string(),
+                    center_lat: 30.58,
+                    center_lon: 32.33,
+                    gate_a: (30.58, 32.15),
+                    gate_b: (30.58, 32.50),
+                    fwd_label: "KUZEY".to_string(),
+                    rev_label: "GUNEY".to_string(),
+                    fwd_count: 0,
+                    rev_count: 0,
+                    mil_count: 0,
+                    tanker_count: 0,
+                },
+                StraitGateStat {
+                    id: "CEB".to_string(),
+                    name: "Cebelitarik Bogazi".to_string(),
+                    center_lat: 35.96,
+                    center_lon: -5.55,
+                    gate_a: (36.10, -5.55),
+                    gate_b: (35.82, -5.55),
+                    fwd_label: "DOGU".to_string(),
+                    rev_label: "BATI".to_string(),
+                    fwd_count: 0,
+                    rev_count: 0,
+                    mil_count: 0,
+                    tanker_count: 0,
+                },
+            ],
+            strait_transit_cooldown: HashMap::new(),
+            vessel_prev_pos: HashMap::new(),
+            aar_pairs: Vec::new(),
+            tactical_ruler: None,
+            escalation_metrics: Vec::new(),
+            recon_windows: Vec::new(),
+            active_flash_alert: None,
+            dvr: crate::dvr::DvrTimeline::default(),
             ai_analysis_running: false,
             ai_last_report: None,
             ai_mode: 0,
@@ -317,7 +447,7 @@ impl AppState {
             news: RingBuffer::new(200),
             cyber_incidents: RingBuffer::new(200),
             earthquakes: RingBuffer::new(100),
-            firms_fires: RingBuffer::new(300),
+            firms_fires: RingBuffer::new(600),
             acled_events: RingBuffer::new(150),
             radiation_measurements: RingBuffer::new(100),
             solar_weather: None,
@@ -698,6 +828,47 @@ impl AppState {
         None
     }
 
+    pub fn push_priority_alert(&mut self, item: AlertItem, lat_lon: Option<(f64, f64)>) {
+        if item.severity >= ThreatSeverity::Critical {
+            let already_acked_same = self.active_flash_alert.as_ref().is_some_and(|cur| {
+                cur.acked
+                    && cur.target_id.is_some()
+                    && cur.target_id == item.target_id
+                    && cur.message == item.message
+            });
+            if !already_acked_same {
+                let (lat, lon) = lat_lon.unwrap_or_else(|| {
+                    if let Some(tid) = item.target_id.as_deref() {
+                        let raw_id = tid.strip_prefix("ANOM:").unwrap_or(tid);
+                        if let Some(t) = self.targets.iter().find(|t| t.id == raw_id) {
+                            return (t.geo.lat, t.geo.lon);
+                        }
+                    }
+                    (self.station_lat, self.station_lon)
+                });
+                self.active_flash_alert = Some(FlashAlertBanner {
+                    message: item.message.clone(),
+                    severity: item.severity,
+                    lat,
+                    lon,
+                    target_id: item.target_id.clone(),
+                    acked: false,
+                });
+            }
+        }
+        let tid_opt = item.target_id.clone();
+        self.alerts.upsert_or_evict_priority(
+            item,
+            |a| tid_opt.is_some() && a.target_id == tid_opt,
+            |a| {
+                matches!(
+                    a.severity,
+                    ThreatSeverity::Low | ThreatSeverity::Advisory | ThreatSeverity::Warning
+                )
+            },
+        );
+    }
+
     pub fn upsert_targets_batch(&mut self, tracks: Vec<TargetTrack>) {
         if tracks.is_empty() {
             return;
@@ -713,12 +884,6 @@ impl AppState {
             .iter()
             .enumerate()
             .map(|(i, t)| (t.id.clone(), i))
-            .collect();
-        let mut alert_idx: HashMap<String, usize> = self
-            .alerts
-            .iter()
-            .enumerate()
-            .filter_map(|(i, a)| a.target_id.as_ref().map(|tid| (tid.clone(), i)))
             .collect();
 
         for track in tracks {
@@ -750,16 +915,7 @@ impl AppState {
                     message: msg,
                     target_id: Some(id.clone()),
                 };
-                if let Some(&idx) = alert_idx.get(&id) {
-                    if let Some(slot) = self.alerts.get_mut(idx) {
-                        *slot = item;
-                    }
-                } else {
-                    let new_idx = self.alerts.len();
-                    if self.alerts.push_if_room(item) {
-                        alert_idx.insert(id.clone(), new_idx);
-                    }
-                }
+                self.push_priority_alert(item, Some((track.geo.lat, track.geo.lon)));
             }
 
             if track.domain == Domain::Air {
@@ -809,6 +965,111 @@ impl AppState {
                 }
             }
         }
+
+        if track.domain == Domain::Sea {
+            self.dark_ships.retain(|d| d.id != id);
+
+            if let Some((prev_lat, prev_lon, prev_ts)) = self.vessel_prev_pos.get(&id).copied() {
+                let dt_secs = (track.last_seen - prev_ts).num_milliseconds() as f64 / 1000.0;
+                let d_nm = crate::geo::haversine_nm(prev_lat, prev_lon, track.geo.lat, track.geo.lon);
+
+                if dt_secs >= 1.0 {
+                    let v_implied = d_nm / (dt_secs / 3600.0);
+                    if v_implied > 55.0 && d_nm > 2.0 {
+                        self.track_anomalies
+                            .insert(id.clone(), "AIS-SPOOF/KLON".to_string());
+                    }
+                }
+
+                if d_nm > 0.0 && d_nm <= 60.0 {
+                    let is_mil = track.is_military;
+                    let vtype_upper = track
+                        .vessel_type
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_uppercase();
+                    let cls_upper = track
+                        .airframe_or_vessel_class
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_uppercase();
+                    let cs_upper = track.callsign.to_uppercase();
+                    let is_tanker = vtype_upper.contains("TANKER")
+                        || cls_upper.contains("TANKER")
+                        || cs_upper.contains("TANKER")
+                        || vtype_upper.contains("PETROL")
+                        || vtype_upper.contains("OIL")
+                        || vtype_upper.contains("VLCC")
+                        || vtype_upper.contains("LNG")
+                        || vtype_upper.contains("LPG");
+
+                    let mut pending_alerts: Vec<(String, String)> = Vec::new();
+                    for gate in &mut self.strait_gates {
+                        let (fwd_dlat, fwd_dlon) =
+                            strait_fwd_vector(&gate.id, gate.gate_a, gate.gate_b);
+                        if let Some(is_fwd) = crate::geo::segments_intersect_directed(
+                            prev_lat,
+                            prev_lon,
+                            track.geo.lat,
+                            track.geo.lon,
+                            gate.gate_a.0,
+                            gate.gate_a.1,
+                            gate.gate_b.0,
+                            gate.gate_b.1,
+                            fwd_dlat,
+                            fwd_dlon,
+                        ) {
+                            let key = (id.clone(), gate.id.clone());
+                            let in_cooldown = self
+                                .strait_transit_cooldown
+                                .get(&key)
+                                .is_some_and(|last_t| {
+                                    (track.last_seen - *last_t).num_seconds().abs() < 6 * 3600
+                                });
+                            if !in_cooldown {
+                                self.strait_transit_cooldown.insert(key, track.last_seen);
+                                if is_fwd {
+                                    gate.fwd_count += 1;
+                                } else {
+                                    gate.rev_count += 1;
+                                }
+                                if is_mil {
+                                    gate.mil_count += 1;
+                                    let dir_lbl = if is_fwd {
+                                        gate.fwd_label.clone()
+                                    } else {
+                                        gate.rev_label.clone()
+                                    };
+                                    pending_alerts.push((gate.name.clone(), dir_lbl));
+                                }
+                                if is_tanker {
+                                    gate.tanker_count += 1;
+                                }
+                            }
+                        }
+                    }
+
+                    for (gname, dir_lbl) in pending_alerts {
+                        self.push_priority_alert(
+                            AlertItem {
+                                timestamp: chrono::Utc::now(),
+                                domain: "BOGAZ".to_string(),
+                                severity: ThreatSeverity::Warning,
+                                message: format!(
+                                    "[BOGAZ-GECIS] {} ({}) -> {} [{}]",
+                                    track.callsign, id, gname, dir_lbl
+                                ),
+                                target_id: Some(format!("ANOM:{}", id)),
+                            },
+                            Some((track.geo.lat, track.geo.lon)),
+                        );
+                    }
+                }
+            }
+            self.vessel_prev_pos
+                .insert(id.clone(), (track.geo.lat, track.geo.lon, track.last_seen));
+        }
+
         let pt = (track.geo.lon, track.geo.lat);
         let trail = self.target_trails.entry(id.clone()).or_default();
         let should_push = match trail.last() {
@@ -829,7 +1090,7 @@ impl AppState {
         }
 
         if let Some((sev, msg)) = self.evaluate_target_alert(&track) {
-            self.alerts.upsert_by(
+            self.push_priority_alert(
                 AlertItem {
                     timestamp: chrono::Utc::now(),
                     domain: track.domain.as_str().to_string(),
@@ -837,7 +1098,7 @@ impl AppState {
                     message: msg,
                     target_id: Some(id.clone()),
                 },
-                |a| a.target_id.as_deref() == Some(id.as_str()),
+                Some((track.geo.lat, track.geo.lon)),
             );
         }
 
@@ -861,6 +1122,14 @@ impl AppState {
         let targets_before = self.targets.len();
         let air_before = self.air_targets.len();
         let sea_before = self.sea_targets.len();
+
+        let stale_sea: Vec<TargetTrack> = self
+            .sea_targets
+            .iter()
+            .filter(|t| (now - t.last_seen).num_seconds() > max_age_secs)
+            .cloned()
+            .collect();
+
         self.targets
             .retain(|t| (now - t.last_seen).num_seconds() <= max_age_secs);
         self.air_targets
@@ -876,10 +1145,82 @@ impl AppState {
         if self.sea_targets.len() != sea_before {
             self.sea_version = self.sea_version.wrapping_add(1);
         }
+
+        for t in stale_sea {
+            let sog = t.speed_kts.unwrap_or(0.0);
+            if sog < 5.0 {
+                continue;
+            }
+            let active_neighbors = self
+                .sea_targets
+                .iter()
+                .filter(|other| {
+                    other.id != t.id
+                        && haversine_km(t.geo.lat, t.geo.lon, other.geo.lat, other.geo.lon) <= 120.0
+                })
+                .count();
+            if active_neighbors >= 2 {
+                let silent_secs = (now - t.last_seen).num_seconds().max(0) as u64;
+                let silent_mins = (silent_secs / 60).max(1);
+                let cog = t.heading_deg.unwrap_or(0.0);
+                let dist_km = sog * 1.852 * (silent_secs as f64 / 3600.0);
+                let (dr_lat, dr_lon) =
+                    crate::geo::dest_point(t.geo.lat, t.geo.lon, cog, dist_km);
+                let dark = DarkShipTrack {
+                    id: t.id.clone(),
+                    callsign: t.callsign.clone(),
+                    last_lat: t.geo.lat,
+                    last_lon: t.geo.lon,
+                    dr_lat,
+                    dr_lon,
+                    sog_kts: sog,
+                    cog_deg: cog,
+                    silent_mins,
+                    is_military: t.is_military,
+                    vessel_type: t.vessel_type.clone(),
+                };
+                if let Some(pos) = self.dark_ships.iter().position(|d| d.id == dark.id) {
+                    self.dark_ships[pos] = dark;
+                } else {
+                    if self.dark_ships.len() >= 40 {
+                        self.dark_ships.remove(0);
+                    }
+                    self.dark_ships.push(dark);
+                }
+                let sev = if t.is_military {
+                    ThreatSeverity::Critical
+                } else {
+                    ThreatSeverity::Warning
+                };
+                self.push_priority_alert(
+                    AlertItem {
+                        timestamp: now,
+                        domain: "DARK-SHIP".to_string(),
+                        severity: sev,
+                        message: format!(
+                            "[DARK-SHIP] {} ({}) AIS kesti! DR:{:.2}N,{:.2}E ({:.1}kt/{:.0}deg, {}dk sessiz)",
+                            t.callsign, t.id, dr_lat, dr_lon, sog, cog, silent_mins
+                        ),
+                        target_id: Some(t.id.clone()),
+                    },
+                    Some((dr_lat, dr_lon)),
+                );
+            }
+        }
+
         let active_ids: std::collections::HashSet<&str> =
             self.targets.iter().map(|t| t.id.as_str()).collect();
         self.target_trails
             .retain(|id, _| active_ids.contains(id.as_str()));
+
+        let active_sea_ids: std::collections::HashSet<&str> =
+            self.sea_targets.iter().map(|t| t.id.as_str()).collect();
+        self.vessel_prev_pos
+            .retain(|id, &mut (_, _, ts)| {
+                active_sea_ids.contains(id.as_str()) || (now - ts).num_seconds() <= 3600
+            });
+        self.strait_transit_cooldown
+            .retain(|_, &mut ts| (now - ts).num_seconds().abs() < 6 * 3600);
     }
 
     pub fn upsert_cyber_incident(&mut self, inc: CyberIncident) {
@@ -1001,15 +1342,15 @@ impl AppState {
                 ev.location, ev.country, ev.event_type, d_km
             );
             let aid = format!("ACLED:{}", id);
-            self.alerts.upsert_by(
+            self.push_priority_alert(
                 AlertItem {
                     timestamp: chrono::Utc::now(),
                     domain: "CATISMA".to_string(),
                     severity: sev,
                     message: msg,
-                    target_id: Some(aid.clone()),
+                    target_id: Some(aid),
                 },
-                |a| a.target_id.as_deref() == Some(aid.as_str()),
+                Some((ev.lat, ev.lon)),
             );
         }
         self.acled_events.upsert_by(ev, |item| item.event_id == id);
@@ -1554,6 +1895,22 @@ impl AppState {
     }
 }
 
+fn strait_fwd_vector(gate_id: &str, gate_a: (f64, f64), gate_b: (f64, f64)) -> (f64, f64) {
+    match gate_id {
+        "IST" => (-1.0, 0.0),
+        "CAN" => (-0.8, -0.6),
+        "HRM" => (0.2, -1.0),
+        "BAB" => (1.0, -0.3),
+        "SUV" => (1.0, 0.0),
+        "CEB" => (0.0, 1.0),
+        _ => {
+            let dlat = gate_b.0 - gate_a.0;
+            let dlon = gate_b.1 - gate_a.1;
+            (-dlon, dlat)
+        }
+    }
+}
+
 fn sanitize_filename_slug(raw: &str) -> String {
     let mut slug = String::new();
     let mut last_us = false;
@@ -1756,5 +2113,104 @@ mod tests {
         assert_ne!(state.geoint_layers & 8, 0);
         assert_ne!(state.geoint_layers & 16, 0);
         assert_ne!(state.geoint_layers & 1024, 0);
+        assert_eq!(state.strait_gates.len(), 6);
+    }
+
+    #[test]
+    fn test_priority_alert_evicts_low_and_sets_flash_banner() {
+        let mut state = AppState::new(AppConfig::default());
+        for i in 0..100 {
+            state.push_priority_alert(
+                AlertItem {
+                    timestamp: chrono::Utc::now(),
+                    domain: "TEST".to_string(),
+                    severity: ThreatSeverity::Warning,
+                    message: format!("Low {}", i),
+                    target_id: Some(format!("LOW:{}", i)),
+                },
+                None,
+            );
+        }
+        assert_eq!(state.alerts.len(), 100);
+        assert!(state.active_flash_alert.is_none());
+
+        state.push_priority_alert(
+            AlertItem {
+                timestamp: chrono::Utc::now(),
+                domain: "TEST".to_string(),
+                severity: ThreatSeverity::Critical,
+                message: "KRITIK ALARM".to_string(),
+                target_id: Some("CRIT:1".to_string()),
+            },
+            Some((36.5, 29.1)),
+        );
+        assert_eq!(state.alerts.len(), 100);
+        assert!(state.alerts.iter().any(|a| a.target_id.as_deref() == Some("CRIT:1")));
+        assert!(!state.alerts.iter().any(|a| a.target_id.as_deref() == Some("LOW:0")));
+        let flash = state.active_flash_alert.as_ref().expect("flash banner");
+        assert_eq!(flash.severity, ThreatSeverity::Critical);
+        assert!(!flash.acked);
+        assert_eq!(flash.lat, 36.5);
+    }
+
+    #[test]
+    fn test_strait_gate_cooldown_and_ais_spoof() {
+        let mut state = AppState::new(AppConfig::default());
+        let t0 = chrono::Utc::now() - chrono::Duration::minutes(20);
+        let t1 = t0 + chrono::Duration::minutes(5);
+        let t2 = t1 + chrono::Duration::minutes(5);
+
+        let mut warship = dummy_track("271001", Domain::Sea, 41.15, 29.07, 0);
+        warship.callsign = "TCG ANADOLU".to_string();
+        warship.is_military = true;
+        warship.speed_kts = Some(14.0);
+        warship.last_seen = t0;
+        state.upsert_target(warship.clone());
+
+        // Cross IST gate north -> south (K->G)
+        warship.geo.lat = 41.09;
+        warship.last_seen = t1;
+        state.upsert_target(warship.clone());
+        assert_eq!(state.strait_gates[0].fwd_count, 1);
+        assert_eq!(state.strait_gates[0].mil_count, 1);
+        assert!(state.alerts.iter().any(|a| a.message.contains("[BOGAZ-GECIS]")));
+
+        // Cross back within 6h cooldown -> should NOT increment rev_count
+        warship.geo.lat = 41.15;
+        warship.last_seen = t2;
+        state.upsert_target(warship);
+        assert_eq!(state.strait_gates[0].rev_count, 0);
+
+        // AIS Spoof jump: > 55 kt & > 2 NM
+        let mut spoof = dummy_track("999001", Domain::Sea, 35.0, 25.0, 0);
+        spoof.last_seen = t0;
+        state.upsert_target(spoof.clone());
+        spoof.geo.lat = 36.0; // ~60 NM in 5 minutes (~720 kt)
+        spoof.last_seen = t1;
+        state.upsert_target(spoof);
+        assert_eq!(
+            state.track_anomalies.get("999001").map(String::as_str),
+            Some("AIS-SPOOF/KLON")
+        );
+    }
+
+    #[test]
+    fn test_dark_ship_detection_on_prune() {
+        let mut state = AppState::new(AppConfig::default());
+        let mut ghost = dummy_track("271999", Domain::Sea, 40.8, 28.9, 1000);
+        ghost.speed_kts = Some(12.0);
+        ghost.heading_deg = Some(90.0);
+        ghost.is_military = true;
+        state.upsert_target(ghost);
+
+        // 2 active sea neighbors within 120 km
+        state.upsert_target(dummy_track("ACT1", Domain::Sea, 40.85, 29.0, 10));
+        state.upsert_target(dummy_track("ACT2", Domain::Sea, 40.75, 28.8, 10));
+
+        state.prune_stale_targets(300);
+        assert_eq!(state.dark_ships.len(), 1);
+        assert_eq!(state.dark_ships[0].id, "271999");
+        assert!(state.dark_ships[0].dr_lon > 28.9);
+        assert!(state.alerts.iter().any(|a| a.domain == "DARK-SHIP"));
     }
 }
