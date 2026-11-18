@@ -147,23 +147,31 @@ pub fn render_cyberint_view(frame: &mut Frame, area: Rect, state: &mut AppState)
 
     for (row_offset, inc) in state.cyber_incidents.iter().skip(start_idx).take(visible_rows).enumerate() {
         let actual_idx = start_idx + row_offset;
-        let row_style = if row_offset == 0 {
+        let is_sel = (state.selected_domain == 4 && state.selected_row == actual_idx)
+            || (state.selected_domain != 4 && row_offset == 0);
+        let zebra_bg = if row_offset % 2 == 0 {
+            BG_PANEL
+        } else {
+            BG_PRIMARY
+        };
+        let row_style = if is_sel {
             Style::default()
                 .fg(TELETEXT_YELLOW)
                 .bg(BG_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD)
         } else {
             match inc.severity {
-                ThreatSeverity::Critical | ThreatSeverity::Emergency => {
-                    Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD)
-                }
-                ThreatSeverity::Warning => Style::default().fg(TELETEXT_YELLOW),
-                _ => Style::default().fg(TELETEXT_CYAN),
+                ThreatSeverity::Critical | ThreatSeverity::Emergency => Style::default()
+                    .fg(TELETEXT_RED)
+                    .bg(zebra_bg)
+                    .add_modifier(Modifier::BOLD),
+                ThreatSeverity::Warning => Style::default().fg(TELETEXT_YELLOW).bg(zebra_bg),
+                _ => Style::default().fg(TELETEXT_CYAN).bg(zebra_bg),
             }
         };
 
         let tag = inc.cve.clone().or_else(|| inc.asn.clone()).unwrap_or_else(|| "-".to_string());
-        let ev_prefix = if row_offset == 0 {
+        let ev_prefix = if is_sel {
             format!("> {}", inc.event_type)
         } else {
             format!("  {}", inc.event_type)

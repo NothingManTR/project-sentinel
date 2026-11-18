@@ -290,6 +290,165 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
             ]));
             lines.push(Line::from(Span::styled(fc.summary.clone(), Style::default().fg(FG_PRIMARY))));
         }
+    } else if state.selected_domain == 1 {
+        if let Some(item) = state.news.get(state.selected_row).or_else(|| state.news.get(0)) {
+            let sev_col = match item.severity {
+                argus_core::types::ThreatSeverity::Emergency
+                | argus_core::types::ThreatSeverity::Critical => TELETEXT_RED,
+                argus_core::types::ThreatSeverity::Warning => TELETEXT_YELLOW,
+                argus_core::types::ThreatSeverity::Advisory => TELETEXT_CYAN,
+                argus_core::types::ThreatSeverity::Low => TELETEXT_GREEN,
+            };
+            lines.push(Line::from(Span::styled(
+                format!("OSINT // {}", item.source),
+                Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Onem        : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    item.severity.as_str(),
+                    Style::default().fg(sev_col).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Saat (UTC)  : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    item.published.format("%Y-%m-%d %H:%M").to_string(),
+                    Style::default().fg(TELETEXT_CYAN),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Baslik      : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(item.title.clone(), Style::default().fg(FG_PRIMARY)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Baglanti    : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(item.link.clone(), Style::default().fg(FG_MUTED)),
+            ]));
+        }
+    } else if state.selected_domain == 4 {
+        if let Some(inc) = state.cyber_incidents.get(state.selected_row).or_else(|| state.cyber_incidents.get(0)) {
+            let sev_col = match inc.severity {
+                argus_core::types::ThreatSeverity::Emergency
+                | argus_core::types::ThreatSeverity::Critical => TELETEXT_RED,
+                argus_core::types::ThreatSeverity::Warning => TELETEXT_YELLOW,
+                _ => TELETEXT_CYAN,
+            };
+            let ref_id = match (&inc.cve, &inc.asn) {
+                (Some(c), Some(a)) => format!("{} | {}", c, a),
+                (Some(c), None) => c.clone(),
+                (None, Some(a)) => a.clone(),
+                (None, None) => "-".to_string(),
+            };
+            lines.push(Line::from(Span::styled(
+                format!("SIBER // {}", inc.event_type),
+                Style::default().fg(sev_col).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("CVE / ASN   : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(ref_id, Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Baslik      : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(inc.title.clone(), Style::default().fg(FG_PRIMARY)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Hedef       : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(inc.target.clone(), Style::default().fg(TELETEXT_CYAN)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Tespit (UTC): ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    inc.timestamp.format("%Y-%m-%d %H:%M").to_string(),
+                    Style::default().fg(FG_MUTED),
+                ),
+            ]));
+        }
+    } else if state.selected_domain == 51 {
+        if let Some(f) = state.firms_fires.get(state.selected_row).or_else(|| state.firms_fires.get(0)) {
+            let d_km = haversine_km(st_lat, st_lon, f.lat, f.lon);
+            let brg = initial_bearing_deg(st_lat, st_lon, f.lat, f.lon);
+            let temp_c = f.brightness - 273.15;
+            lines.push(Line::from(Span::styled(
+                format!("TERMAL // {} VIIRS", f.satellite),
+                Style::default().fg(TELETEXT_RED).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Parlaklik   : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    format!("{:.1} K ({:.1} C)", f.brightness, temp_c),
+                    Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Guvenilirlik: ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(format!("%{}", f.confidence), Style::default().fg(TELETEXT_CYAN)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Zaman (UTC) : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    format!("{} {}", f.acq_date, f.acq_time),
+                    Style::default().fg(FG_PRIMARY),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Koordinat   : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(format!("{:.4}N, {:.4}E", f.lat, f.lon), Style::default().fg(TELETEXT_CYAN)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Ist. Mesafe : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    format!("{:.1} km ({:.0} deg {})", d_km, brg, bearing_sector_tr(brg)),
+                    Style::default().fg(TELETEXT_GREEN),
+                ),
+            ]));
+        }
+    } else if state.selected_domain == 53 {
+        if let Some(rad) = state.radiation_measurements.get(state.selected_row).or_else(|| state.radiation_measurements.get(0)) {
+            let usvh = if rad.unit == "cpm" { rad.value / 334.0 } else { rad.value };
+            let (status_txt, status_col) = if usvh >= 1.0 {
+                ("KRITIK", TELETEXT_RED)
+            } else if usvh >= 0.3 {
+                ("YUKSEK", TELETEXT_YELLOW)
+            } else {
+                ("NORMAL", TELETEXT_GREEN)
+            };
+            let d_km = haversine_km(st_lat, st_lon, rad.lat, rad.lon);
+            let brg = initial_bearing_deg(st_lat, st_lon, rad.lat, rad.lon);
+            lines.push(Line::from(Span::styled(
+                format!("CBRN // SAFECAST #{}", rad.id),
+                Style::default().fg(status_col).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Doz Hizi    : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    format!("{:.4} uSv/h", usvh),
+                    Style::default().fg(TELETEXT_CYAN).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Ham Deger   : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(format!("{:.1} {}", rad.value, rad.unit), Style::default().fg(FG_PRIMARY)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Durum       : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(status_txt, Style::default().fg(status_col).add_modifier(Modifier::BOLD)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Konum       : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    rad.location_name.as_deref().unwrap_or("Geiger Istasyonu").to_string(),
+                    Style::default().fg(FG_PRIMARY),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Koord/Mesafe: ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    format!("{:.3}N, {:.3}E ({:.1} km {:.0} deg {})", rad.lat, rad.lon, d_km, brg, bearing_sector_tr(brg)),
+                    Style::default().fg(TELETEXT_GREEN),
+                ),
+            ]));
+        }
     }
 
     if lines.is_empty() {
@@ -442,7 +601,7 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
     }
 
     let show_air_photo = !state.is_dialog_open
-        && !matches!(state.selected_domain, 3 | 30 | 50 | 52 | 54 | 55)
+        && !matches!(state.selected_domain, 1 | 3 | 4 | 30 | 50 | 51 | 52 | 53 | 54 | 55)
         && inspected_track
             .as_ref()
             .is_some_and(|t| t.domain == Domain::Air);
@@ -539,49 +698,93 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
     );
     frame.render_widget(act_p, chunks[1]);
 
-    // 3. Canlı Alarm & Watchlist Özeti
+    // 3. Canlı Alarm & Watchlist Özeti (Sarilmayan tek-satir satirlar + birebir tiklama kaydi)
+    let avail_rows = chunks[2].height.saturating_sub(2) as usize;
+    let max_w = chunks[2].width.saturating_sub(3) as usize;
     let mut alert_lines = Vec::new();
-    let mut alerts_vec: Vec<_> = state.alerts.iter().collect();
-    alerts_vec.reverse();
-    for a in alerts_vec.into_iter().take(5) {
+
+    let alerts: Vec<_> = state.alerts.iter().enumerate().collect();
+    for (orig_idx, a) in alerts.into_iter().rev() {
+        if alert_lines.len() >= avail_rows {
+            break;
+        }
+        let row_offset = alert_lines.len();
         let c = match a.severity {
             argus_core::types::ThreatSeverity::Emergency
             | argus_core::types::ThreatSeverity::Critical => TELETEXT_RED,
             _ => TELETEXT_YELLOW,
         };
+        let time_prefix = format!("▸ {} ", a.timestamp.format("%H:%M"));
+        let prefix_w = time_prefix.chars().count();
+        let msg_clipped: String = a
+            .message
+            .replace('\n', " ")
+            .chars()
+            .take(max_w.saturating_sub(prefix_w))
+            .collect();
+        alert_lines.push(Line::from(vec![
+            Span::styled(time_prefix, Style::default().fg(FG_MUTED)),
+            Span::styled(msg_clipped, Style::default().fg(c)),
+        ]));
+        state.hit_tester.register(
+            Rect {
+                x: chunks[2].x + 1,
+                y: chunks[2].y + 1 + row_offset as u16,
+                width: chunks[2].width.saturating_sub(2),
+                height: 1,
+            },
+            HitTarget::AlertItem(orig_idx),
+        );
+    }
+
+    for (fc_idx, fc) in state.fusion_clusters.iter().enumerate() {
+        if alert_lines.len() >= avail_rows {
+            break;
+        }
+        let row_offset = alert_lines.len();
+        let prefix = format!("▸ [FUZ:{}] ", fc.score);
+        let prefix_w = prefix.chars().count();
+        let sum_clipped: String = fc
+            .summary
+            .replace('\n', " ")
+            .chars()
+            .take(max_w.saturating_sub(prefix_w))
+            .collect();
         alert_lines.push(Line::from(vec![
             Span::styled(
-                format!("{} ", a.timestamp.format("%H:%M")),
-                Style::default().fg(FG_MUTED),
+                prefix,
+                Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(a.message.clone(), Style::default().fg(c)),
+            Span::styled(sum_clipped, Style::default().fg(TELETEXT_CYAN)),
         ]));
+        state.hit_tester.register(
+            Rect {
+                x: chunks[2].x + 1,
+                y: chunks[2].y + 1 + row_offset as u16,
+                width: chunks[2].width.saturating_sub(2),
+                height: 1,
+            },
+            HitTarget::FusionAlert(fc_idx),
+        );
     }
-    if !state.fusion_clusters.is_empty() && alert_lines.len() < 4 {
-        for fc in state.fusion_clusters.iter().take(2) {
-            alert_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("[FUZ:{}] ", fc.score),
-                    Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(fc.summary.clone(), Style::default().fg(TELETEXT_CYAN)),
-            ]));
-        }
-    }
+
     if alert_lines.is_empty() {
+        let empty_msg: String = "Alarm yok (180km askeri, 7x00 & Fuzyon aktif)"
+            .chars()
+            .take(max_w)
+            .collect();
         alert_lines.push(Line::from(Span::styled(
-            "Alarm yok (180km askeri, 7x00 & Fuzyon aktif)",
+            empty_msg,
             Style::default().fg(FG_MUTED),
         )));
     }
 
-    let alert_p = Paragraph::new(alert_lines).wrap(Wrap { trim: true }).block(
+    let alert_p = Paragraph::new(alert_lines).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(BORDER_DIM))
             .title(format!(
-                " [OTOMATIK ALARMLAR ({}) | IZLEME ({})] ",
-                state.alerts.len(),
+                " [ [7] OTOMATIK ALARMLAR (Tikla: Odakla) | IZL ({}) ] ",
                 state.watchlist.len()
             ))
             .style(Style::default().bg(BG_PANEL)),

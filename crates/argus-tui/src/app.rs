@@ -72,7 +72,7 @@ impl App {
                     if let Some(t) = st.inspected_target().filter(|t| t.id.eq_ignore_ascii_case(&d_icao)) {
                         Self::spawn_flight_schedule(&self.state, &mut st, &t);
                     }
-                } else if !st.is_dialog_open && !matches!(st.selected_domain, 3 | 30 | 50 | 52 | 54 | 55) {
+                } else if !st.is_dialog_open && !matches!(st.selected_domain, 1 | 3 | 4 | 30 | 50 | 51 | 52 | 53 | 54 | 55) {
                     if let Some(t) = st.inspected_target().filter(|t| t.domain == Domain::Air) {
                         let icao = t.id.to_lowercase();
                         if self.photo_ctx.last_inspector_icao.as_deref() != Some(&icao) {
@@ -264,6 +264,9 @@ impl App {
                     if st.active_view == ActiveView::AirTracks {
                         st.air_scroll = 0;
                         st.sync_air_selection();
+                    } else if st.active_view == ActiveView::Osint {
+                        let cat = st.news_filter;
+                        Self::apply_osint_category(&mut st, cat);
                     }
                     self.audio.play(SoundEffect::Click);
                 }
@@ -272,6 +275,9 @@ impl App {
                     if st.active_view == ActiveView::AirTracks {
                         st.air_scroll = 0;
                         st.sync_air_selection();
+                    } else if st.active_view == ActiveView::Osint {
+                        let cat = st.news_filter;
+                        Self::apply_osint_category(&mut st, cat);
                     }
                     self.audio.play(SoundEffect::Blip);
                 }
@@ -539,32 +545,51 @@ impl App {
                         self.audio.play(SoundEffect::Click);
                         return;
                     }
-                    KeyCode::Char(c) if ('0'..='4').contains(&c) => {
-                        st.news_filter = (c as usize) - ('0' as usize);
-                        st.news_scroll = 0;
+                    KeyCode::Char(c) if ('0'..='5').contains(&c) => {
+                        let cat = (c as usize) - ('0' as usize);
+                        Self::apply_osint_category(&mut st, cat);
                         self.audio.play(SoundEffect::Click);
                         return;
                     }
-                    KeyCode::Up => {
-                        st.news_scroll = st.news_scroll.saturating_sub(1);
-                        return;
-                    }
-                    KeyCode::Down => {
-                        st.news_scroll = st.news_scroll.saturating_add(1);
-                        return;
-                    }
-                    KeyCode::PageUp => {
-                        st.news_scroll = st.news_scroll.saturating_sub(10);
-                        return;
-                    }
-                    KeyCode::PageDown => {
-                        st.news_scroll = st.news_scroll.saturating_add(10);
+                    KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                        let delta: isize = match code {
+                            KeyCode::Up => -1,
+                            KeyCode::Down => 1,
+                            KeyCode::PageUp => -10,
+                            _ => 10,
+                        };
+                        if st.news_filter == 5 {
+                            let filtered = Self::filtered_acled_indices(&st);
+                            let max_pos = filtered.len().saturating_sub(1);
+                            let next_pos = Self::step_scroll(st.news_scroll, delta, max_pos);
+                            let orig_idx = filtered.get(next_pos).copied().unwrap_or(0);
+                            Self::select_item_for_inspector(&mut st, 52, orig_idx);
+                            st.news_scroll = next_pos;
+                        } else {
+                            let filtered = Self::filtered_news_indices(&st);
+                            let max_pos = filtered.len().saturating_sub(1);
+                            let next_pos = Self::step_scroll(st.news_scroll, delta, max_pos);
+                            st.news_scroll = next_pos;
+                            let orig_idx = filtered.get(next_pos).copied().unwrap_or(0);
+                            Self::select_item_for_inspector(&mut st, 1, orig_idx);
+                        }
                         return;
                     }
                     KeyCode::Enter => {
-                        let idx = st.news_scroll;
-                        if Self::open_item_dossier(&mut st, 1, idx) {
-                            self.audio.play(SoundEffect::Blip);
+                        if st.news_filter == 5 {
+                            let filtered = Self::filtered_acled_indices(&st);
+                            if let Some(&idx) = filtered.get(st.news_scroll.min(filtered.len().saturating_sub(1))) {
+                                if Self::open_item_dossier(&mut st, 52, idx) {
+                                    self.audio.play(SoundEffect::Blip);
+                                }
+                            }
+                        } else {
+                            let filtered = Self::filtered_news_indices(&st);
+                            if let Some(&orig_idx) = filtered.get(st.news_scroll.min(filtered.len().saturating_sub(1))) {
+                                if Self::open_item_dossier(&mut st, 1, orig_idx) {
+                                    self.audio.play(SoundEffect::Blip);
+                                }
+                            }
                         }
                         return;
                     }
@@ -748,67 +773,47 @@ impl App {
                         self.audio.play(SoundEffect::Click);
                         return;
                     }
-                    KeyCode::Char('1') => { st.masint_tab = 0; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
-                    KeyCode::Char('2') => { st.masint_tab = 1; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
-                    KeyCode::Char('3') => { st.masint_tab = 2; st.radiation_scroll = 0; self.audio.play(SoundEffect::Click); return; }
-                    KeyCode::Char('4') => { st.masint_tab = 3; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
-                    KeyCode::Char('5') => { st.masint_tab = 4; st.geo_scroll = 0; self.audio.play(SoundEffect::Click); return; }
-                    KeyCode::Up => {
-                        if st.masint_tab == 2 {
-                            st.radiation_scroll = st.radiation_scroll.saturating_sub(1);
-                        } else {
-                            st.geo_scroll = st.geo_scroll.saturating_sub(1);
-                        }
+                    KeyCode::Char(c) if ('1'..='4').contains(&c) => {
+                        let tab = (c as usize) - ('1' as usize);
+                        Self::apply_masint_tab(&mut st, tab);
+                        self.audio.play(SoundEffect::Click);
                         return;
                     }
-                    KeyCode::Down => {
-                        let max_pos = match st.masint_tab {
-                            1 => st.firms_fires.len().saturating_sub(1),
-                            2 => st.radiation_measurements.len().saturating_sub(1),
-                            3 => st.acled_events.len().saturating_sub(1),
-                            4 => st.airspace_warnings.len().saturating_sub(1),
-                            _ => st.earthquakes.len().saturating_sub(1),
+                    KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                        let delta: isize = match code {
+                            KeyCode::Up => -1,
+                            KeyCode::Down => 1,
+                            KeyCode::PageUp => -10,
+                            _ => 10,
                         };
-                        if st.masint_tab == 2 {
-                            st.radiation_scroll = (st.radiation_scroll + 1).min(max_pos);
-                        } else {
-                            st.geo_scroll = (st.geo_scroll + 1).min(max_pos);
-                        }
-                        return;
-                    }
-                    KeyCode::PageUp => {
-                        if st.masint_tab == 2 {
-                            st.radiation_scroll = st.radiation_scroll.saturating_sub(10);
-                        } else {
-                            st.geo_scroll = st.geo_scroll.saturating_sub(10);
-                        }
-                        return;
-                    }
-                    KeyCode::PageDown => {
-                        let max_pos = match st.masint_tab {
-                            1 => st.firms_fires.len().saturating_sub(1),
-                            2 => st.radiation_measurements.len().saturating_sub(1),
-                            3 => st.acled_events.len().saturating_sub(1),
-                            4 => st.airspace_warnings.len().saturating_sub(1),
-                            _ => st.earthquakes.len().saturating_sub(1),
+                        let (dom, max_pos) = match st.masint_tab {
+                            1 => (51, st.firms_fires.len().saturating_sub(1)),
+                            2 => (53, st.radiation_measurements.len().saturating_sub(1)),
+                            3 => (54, st.airspace_warnings.len().saturating_sub(1)),
+                            _ => (50, st.earthquakes.len().saturating_sub(1)),
                         };
-                        if st.masint_tab == 2 {
-                            st.radiation_scroll = (st.radiation_scroll + 10).min(max_pos);
+                        let idx = if st.masint_tab == 2 {
+                            st.radiation_scroll = Self::step_scroll(st.radiation_scroll, delta, max_pos);
+                            st.radiation_scroll
                         } else {
-                            st.geo_scroll = (st.geo_scroll + 10).min(max_pos);
-                        }
+                            st.geo_scroll = Self::step_scroll(st.geo_scroll, delta, max_pos);
+                            st.geo_scroll
+                        };
+                        Self::select_item_for_inspector(&mut st, dom, idx);
                         return;
                     }
                     KeyCode::Enter => {
-                        let (dom, idx) = match st.masint_tab {
-                            1 => (51, st.geo_scroll),
-                            2 => (53, st.radiation_scroll),
-                            3 => (52, st.geo_scroll),
-                            4 => (54, st.geo_scroll),
-                            _ => (50, st.geo_scroll),
+                        let (dom, scroll, len) = match st.masint_tab {
+                            1 => (51, st.geo_scroll, st.firms_fires.len()),
+                            2 => (53, st.radiation_scroll, st.radiation_measurements.len()),
+                            3 => (54, st.geo_scroll, st.airspace_warnings.len()),
+                            _ => (50, st.geo_scroll, st.earthquakes.len()),
                         };
-                        if Self::open_item_dossier(&mut st, dom, idx) {
-                            self.audio.play(SoundEffect::Blip);
+                        if len > 0 {
+                            let idx = scroll.min(len.saturating_sub(1));
+                            if Self::open_item_dossier(&mut st, dom, idx) {
+                                self.audio.play(SoundEffect::Blip);
+                            }
                         }
                         return;
                     }
@@ -1150,7 +1155,7 @@ impl App {
             KeyCode::Char('o') | KeyCode::Char('O') => {
                 let dom = st.selected_domain;
                 let row = st.selected_row;
-                if matches!(dom, 3 | 30 | 50 | 52 | 54 | 55) {
+                if matches!(dom, 1 | 3 | 4 | 30 | 50 | 51 | 52 | 53 | 54 | 55) {
                     if Self::open_item_dossier(&mut st, dom, row) {
                         self.audio.play(SoundEffect::Blip);
                     }
@@ -1355,8 +1360,7 @@ impl App {
                             self.audio.play(SoundEffect::Click);
                         }
                         HitTarget::OsintCategory(cat) => {
-                            st.news_filter = cat;
-                            st.news_scroll = 0;
+                            Self::apply_osint_category(&mut st, cat);
                             self.audio.play(SoundEffect::Click);
                         }
                         HitTarget::CalcKey(ch) => {
@@ -1437,7 +1441,7 @@ impl App {
                             }
                         }
                         HitTarget::MasintTab(tid) => {
-                            st.masint_tab = tid.min(2);
+                            Self::apply_masint_tab(&mut st, tid);
                             self.audio.play(SoundEffect::Click);
                         }
                         HitTarget::ShodanPreset(idx) => {
@@ -1600,6 +1604,18 @@ impl App {
                             }
                             Self::select_item_for_inspector(&mut st, tile_idx, row_idx);
                             if is_double_click && Self::open_item_dossier(&mut st, tile_idx, row_idx) {
+                                self.audio.play(SoundEffect::Blip);
+                            } else {
+                                self.audio.play(SoundEffect::Click);
+                            }
+                        }
+                        HitTarget::AlertItem(alert_idx) => {
+                            if let Some(sfx) = Self::handle_alert_click(&mut st, alert_idx, is_double_click) {
+                                self.audio.play(sfx);
+                            }
+                        }
+                        HitTarget::FusionAlert(fc_idx) => {
+                            if Self::focus_fusion_cluster(&mut st, fc_idx, is_double_click) {
                                 self.audio.play(SoundEffect::Blip);
                             } else {
                                 self.audio.play(SoundEffect::Click);
@@ -2430,6 +2446,230 @@ impl App {
         }
     }
 
+    fn step_scroll(cur: usize, delta: isize, max_pos: usize) -> usize {
+        if delta < 0 {
+            cur.min(max_pos).saturating_sub(delta.unsigned_abs())
+        } else {
+            cur.saturating_add(delta.unsigned_abs()).min(max_pos)
+        }
+    }
+
+    fn filtered_news_indices(st: &AppState) -> Vec<usize> {
+        let q_lower = st.search_query.to_lowercase();
+        st.news
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                let cat_ok = match st.news_filter {
+                    1 => item.category.starts_with("P201"),
+                    2 => item.category.starts_with("P202"),
+                    3 => item.category.starts_with("P203"),
+                    4 => item.category.starts_with("P204"),
+                    _ => true,
+                };
+                let search_ok = q_lower.is_empty()
+                    || item.title.to_lowercase().contains(&q_lower)
+                    || item.source.to_lowercase().contains(&q_lower);
+                cat_ok && search_ok
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    fn filtered_acled_indices(st: &AppState) -> Vec<usize> {
+        let q_lower = st.search_query.to_lowercase();
+        st.acled_events
+            .iter()
+            .enumerate()
+            .filter(|(_, ev)| {
+                q_lower.is_empty()
+                    || ev.country.to_lowercase().contains(&q_lower)
+                    || ev.location.to_lowercase().contains(&q_lower)
+                    || ev.event_type.to_lowercase().contains(&q_lower)
+                    || ev.actor1.to_lowercase().contains(&q_lower)
+                    || ev.notes.to_lowercase().contains(&q_lower)
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    fn apply_osint_category(st: &mut AppState, cat: usize) {
+        let cat = cat.min(5);
+        st.news_filter = cat;
+        st.news_scroll = 0;
+        if cat == 5 {
+            let first_idx = Self::filtered_acled_indices(st).first().copied().unwrap_or(0);
+            Self::select_item_for_inspector(st, 52, first_idx);
+            st.news_scroll = 0;
+        } else {
+            let first_idx = Self::filtered_news_indices(st).first().copied().unwrap_or(0);
+            st.selected_domain = 1;
+            st.selected_row = first_idx;
+        }
+    }
+
+    fn apply_masint_tab(st: &mut AppState, tid: usize) {
+        st.masint_tab = tid.min(3);
+        st.geo_scroll = 0;
+        st.radiation_scroll = 0;
+        let dom = match st.masint_tab {
+            1 => 51,
+            2 => 53,
+            3 => 54,
+            _ => 50,
+        };
+        Self::select_item_for_inspector(st, dom, 0);
+    }
+
+    fn focus_fusion_cluster(st: &mut AppState, fc_idx: usize, is_double_click: bool) -> bool {
+        st.follow_target_id = None;
+        Self::select_item_for_inspector(st, 55, fc_idx);
+        st.map_zoom = st.map_zoom.max(3.5);
+        if let Some(fc) = st.fusion_clusters.get(fc_idx) {
+            st.live_status = format!(
+                "K-4 FUZYON KUMESI [Skor {}]: {:.2}N, {:.2}E ({})",
+                fc.score,
+                fc.lat,
+                fc.lon,
+                fc.domains.join("+")
+            );
+        }
+        is_double_click && Self::open_item_dossier(st, 55, fc_idx)
+    }
+
+    fn handle_alert_click(
+        st: &mut AppState,
+        alert_idx: usize,
+        is_double_click: bool,
+    ) -> Option<SoundEffect> {
+        let alert = st.alerts.get(alert_idx).cloned()?;
+        let Some(tid) = alert.target_id.as_deref() else {
+            st.live_status = format!("ALARM: {}", alert.message);
+            return Some(SoundEffect::Click);
+        };
+
+        if tid == "SYS:DEFCON" {
+            Self::open_defcon_dialog(st);
+            return Some(SoundEffect::Blip);
+        }
+
+        if let Some(ev_id) = tid.strip_prefix("ACLED:") {
+            let pos_opt = st.acled_events.iter().position(|e| e.event_id == ev_id);
+            if let Some(pos) = pos_opt {
+                st.follow_target_id = None;
+                Self::select_item_for_inspector(st, 52, pos);
+                st.map_zoom = st.map_zoom.max(4.0);
+                if let Some(ev) = st.acled_events.get(pos) {
+                    st.live_status = format!(
+                        "ALARM CATISMA: {}, {} ({}) ({:.2}N, {:.2}E)",
+                        ev.location, ev.country, ev.event_type, ev.lat, ev.lon
+                    );
+                }
+                return Some(if is_double_click && Self::open_item_dossier(st, 52, pos) {
+                    SoundEffect::Blip
+                } else {
+                    SoundEffect::Click
+                });
+            }
+            st.live_status = format!("ALARM: {}", alert.message);
+            return Some(SoundEffect::Click);
+        }
+
+        if tid.starts_with("FUZ:") {
+            let pos = st
+                .fusion_clusters
+                .iter()
+                .position(|fc| format!("FUZ:{:.1}:{:.1}", fc.lat, fc.lon) == tid)
+                .unwrap_or(0);
+            return Some(if Self::focus_fusion_cluster(st, pos, is_double_click) {
+                SoundEffect::Blip
+            } else {
+                SoundEffect::Click
+            });
+        }
+
+        let raw_id = tid.strip_prefix("ANOM:").unwrap_or(tid).to_string();
+        if st.follow_target_id.as_deref() != Some(raw_id.as_str()) {
+            st.follow_target_id = None;
+        }
+        st.selected_target_id = Some(raw_id.clone());
+
+        let found = st
+            .air_targets
+            .iter()
+            .find(|t| t.id == raw_id)
+            .or_else(|| st.sea_targets.iter().find(|t| t.id == raw_id))
+            .or_else(|| st.targets.iter().find(|t| t.id == raw_id))
+            .cloned();
+
+        let Some(t) = found else {
+            st.live_status = format!("ALARM KAYDI: {}", alert.message);
+            return Some(SoundEffect::Click);
+        };
+
+        st.map_center_lat = t.geo.lat;
+        st.map_center_lon = t.geo.lon;
+        st.map_zoom = st.map_zoom.max(4.5);
+
+        if t.domain == Domain::Air {
+            st.selected_domain = 20;
+            st.ensure_air_indices();
+            if let Some(pos) = st
+                .cached_air_indices
+                .iter()
+                .position(|&bi| st.air_targets.get(bi).is_some_and(|x| x.id == raw_id))
+            {
+                st.air_scroll = pos;
+                st.selected_row = pos;
+            }
+        } else if t.domain == Domain::Sea {
+            st.selected_domain = 21;
+            st.ensure_sea_indices();
+            if let Some(pos) = st
+                .cached_sea_indices
+                .iter()
+                .position(|&bi| st.sea_targets.get(bi).is_some_and(|x| x.id == raw_id))
+            {
+                st.sea_scroll = pos;
+                st.selected_row = pos;
+            }
+        } else {
+            st.selected_domain = 2;
+        }
+
+        st.ensure_proximity_indices();
+        if let Some(ppos) = st
+            .cached_prox_indices
+            .iter()
+            .position(|&bi| st.targets.get(bi).is_some_and(|x| x.id == raw_id))
+        {
+            st.target_scroll = ppos;
+            if t.domain != Domain::Air && t.domain != Domain::Sea {
+                st.selected_row = ppos;
+            }
+        }
+
+        st.live_status = format!(
+            "ALARM HEDEFI SECILDI: {} [{}] ({:.2}N, {:.2}E)",
+            t.callsign, t.id, t.geo.lat, t.geo.lon
+        );
+
+        if is_double_click {
+            if t.domain == Domain::Air {
+                Self::open_air_target_dossier(st, &t);
+                return Some(SoundEffect::Blip);
+            }
+            let pos_opt = st.targets.iter().position(|x| x.id == raw_id);
+            if let Some(pos) = pos_opt {
+                if Self::open_item_dossier(st, 2, pos) {
+                    return Some(SoundEffect::Blip);
+                }
+            }
+        }
+
+        Some(SoundEffect::Click)
+    }
+
     fn select_item_for_inspector(st: &mut AppState, tile_idx: usize, row_idx: usize) {
         st.selected_domain = tile_idx;
         st.selected_row = row_idx;
@@ -2438,15 +2678,100 @@ impl App {
                 if let Some(t) = st.aircraft_at_sorted(row_idx) {
                     st.selected_target_id = Some(t.id.clone());
                 }
+                if st.follow_target_id.as_deref() != st.selected_target_id.as_deref() {
+                    st.follow_target_id = None;
+                }
             }
             21 => {
                 if let Some(t) = st.vessel_at_sorted(row_idx) {
                     st.selected_target_id = Some(t.id.clone());
                 }
+                if st.follow_target_id.as_deref() != st.selected_target_id.as_deref() {
+                    st.follow_target_id = None;
+                }
             }
             2 => {
                 if let Some(t) = st.targets.get(row_idx) {
                     st.selected_target_id = Some(t.id.clone());
+                }
+                if st.follow_target_id.as_deref() != st.selected_target_id.as_deref() {
+                    st.follow_target_id = None;
+                }
+            }
+            1 => {
+                // news_scroll filtreli liste konumu olarak korunur
+            }
+            3 => {
+                st.sat_scroll = row_idx;
+                if let Some(s) = st.satellites.get(row_idx) {
+                    st.follow_target_id = None;
+                    st.map_center_lat = s.lat;
+                    st.map_center_lon = s.lon;
+                }
+            }
+            4 => {
+                st.cyber_scroll = row_idx;
+            }
+            30 => {
+                st.eam_scroll = row_idx;
+            }
+            50 => {
+                st.geo_scroll = row_idx;
+                if let Some(q) = st.earthquakes.get(row_idx) {
+                    st.follow_target_id = None;
+                    st.map_center_lat = q.lat;
+                    st.map_center_lon = q.lon;
+                }
+            }
+            51 => {
+                st.geo_scroll = row_idx;
+                if let Some(f) = st.firms_fires.get(row_idx) {
+                    st.follow_target_id = None;
+                    st.map_center_lat = f.lat;
+                    st.map_center_lon = f.lon;
+                }
+            }
+            52 => {
+                if st.active_view == ActiveView::Osint && st.news_filter == 5 {
+                    if let Some(fpos) = Self::filtered_acled_indices(st)
+                        .iter()
+                        .position(|&i| i == row_idx)
+                    {
+                        st.news_scroll = fpos;
+                    }
+                } else {
+                    st.geo_scroll = row_idx;
+                }
+                if let Some(ev) = st.acled_events.get(row_idx) {
+                    st.follow_target_id = None;
+                    st.map_center_lat = ev.lat;
+                    st.map_center_lon = ev.lon;
+                    st.geoint_layers |= 8 | 16;
+                }
+            }
+            53 => {
+                st.radiation_scroll = row_idx;
+                if let Some(r) = st.radiation_measurements.get(row_idx) {
+                    st.follow_target_id = None;
+                    st.map_center_lat = r.lat;
+                    st.map_center_lon = r.lon;
+                }
+            }
+            54 => {
+                st.geo_scroll = row_idx;
+                if let Some(aw) = st.airspace_warnings.get(row_idx) {
+                    st.follow_target_id = None;
+                    st.map_center_lat = aw.center_lat;
+                    st.map_center_lon = aw.center_lon;
+                    st.geoint_layers |= 1 << 11;
+                }
+            }
+            55 => {
+                if let Some(fc) = st.fusion_clusters.get(row_idx) {
+                    st.follow_target_id = None;
+                    st.map_center_lat = fc.lat;
+                    st.map_center_lon = fc.lon;
+                    st.geoint_layers |= 1024;
                 }
             }
             _ => {}
@@ -2515,10 +2840,10 @@ impl App {
                 "> [F3] HAVA (H)  : Canli ADS-B Hava Sahasi Radari, Mesafe & Kerteriz".to_string(),
                 "> [F4] DENIZ (D) : Canli AIS Deniz Filosu, Savas Gemileri & Bogazlar".to_string(),
                 "> [F5] SIGINT    : Canli KiwiSDR WebSocket (/SND) HF Alicisi & EAM".to_string(),
-                "> [F6] OSINT     : Kriz & Istihbarat Haber Bulteni".to_string(),
+                "> [F6] OSINT     : Kriz Haberleri [0-4] & GDELT/ACLED Catisma Tablosu [5]".to_string(),
                 "> [F7] SIBER     : Hibrit Kesif (Shodan + RIPE BGP + 16-Port Tarama), CISA & IODA".to_string(),
                 "> [F8] UYDU      : CelesTrak GP SGP4 Uydu Polar Radar Skobu & Gecisler (Ok/Enter)".to_string(),
-                "> [F9] AFET/KRIZ : Deprem, FIRMS Termal, Safecast CBRN, GDELT Catisma & NOTAM [1-5]".to_string(),
+                "> [F9] AFET/KRIZ : Deprem, FIRMS Termal, Safecast CBRN & NOTAM/SIGMET [1-4]".to_string(),
                 "> [F10/F11]      : Notlar & AI Rapor Arsivi (Tab/Ok/Ctrl+N/Ctrl+S) / Hesap".to_string(),
                 "--- 2. SAG DENETCI PANELI VE HARITA KONTROLLERI ---".to_string(),
                 "> [Tek Tik]      : Tablo veya haritadaki hedefi Sag Denetci Panelinde inceler".to_string(),
@@ -2527,7 +2852,7 @@ impl App {
                 "> [Shift+W / WEB]: http://127.0.0.1:8090 uzerinde canli Leaflet haritasini acar".to_string(),
                 "> [WASD / Oklar] : F1/F2 haritasini kaydirir | [1-6 + Z/Esc]: Paneli tam ekran buyut".to_string(),
                 "> [G / F / B]    : Haritada Odakla (G) | Takip Kilidi (F) | Izleme Listesi (B)".to_string(),
-                "> [ :Ntm]        : NOTAM / SIGMET / GPS-JAM Hava Sahasi Cokgen Katmani".to_string(),
+                "> [x:Ntm]        : NOTAM / SIGMET / GPS-JAM Hava Sahasi Cokgen Katmani".to_string(),
                 "--- 3. GEMINI AI ANALIZ & DOSYA KAYIT KISAYOLLARI ---".to_string(),
                 "> [Shift+A/Ctrl+A]: AI SITREP ac (1:Kuresel 2:Hedef 3:Bolge 4:Ozel Soru R:Yenile)".to_string(),
                 "> [K / Ctrl+S]   : Acik AI raporunu/dosyasini dogrudan reports/*.md kaydet".to_string(),

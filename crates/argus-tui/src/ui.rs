@@ -112,7 +112,7 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
         .unwrap_or_default();
 
     let metrics_str = format!(
-        " AIR:{}({}M) │ SEA:{}({}W) │ SAT:{} │ GEO:{} │ EAM:{}{} ",
+        " AIR:{}({}M) │ SEA:{}({}W) │ SAT:{} │ GEO:{} │ EAM:{} │ CAT:{} │ ALR:{}{} ",
         format_compact_count(state.air_targets.len()),
         mil_air,
         state.sea_targets.len(),
@@ -120,6 +120,8 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
         state.satellites.len(),
         state.earthquakes.len(),
         state.eam_messages.len(),
+        state.acled_events.len(),
+        state.alerts.len(),
         wx_tag,
     );
 
@@ -286,11 +288,20 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
 
     let mut r1 = Vec::new();
     let mut tx = rows[1].x;
-    for (view, label) in tabs.iter() {
+    for (idx, (view, label)) in tabs.iter().enumerate() {
         let is_active = state.active_view == *view;
-        let text = format!(" {} ", label);
+        let text = if is_active {
+            format!(" ▸{} ", label)
+        } else {
+            format!(" {} ", label)
+        };
         let w = text.chars().count() as u16;
-        if tx + w <= tab_budget {
+        let sep_w = if idx > 0 { 1 } else { 0 };
+        if tx + sep_w + w <= tab_budget {
+            if idx > 0 {
+                r1.push(Span::styled("│", Style::default().fg(FG_MUTED).bg(BG_PANEL)));
+                tx += 1;
+            }
             let st = if is_active {
                 Style::default()
                     .fg(TELETEXT_BLACK)
@@ -300,18 +311,19 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
                 Style::default().fg(FG_SECONDARY).bg(BG_PANEL)
             };
             r1.push(Span::styled(text, st));
-            r1.push(Span::styled("│", Style::default().fg(BORDER_DIM).bg(BG_PANEL)));
             state.hit_tester.register(
                 Rect { x: tx, y: rows[1].y, width: w, height: 1 },
                 HitTarget::TaskbarViewTab(*view),
             );
-            tx += w + 1;
+            tx += w;
         }
     }
 
-    if rows[1].x + rows[1].width > tx + sw {
+    if rows[1].x + rows[1].width >= tx + sw {
         let fill = (rows[1].x + rows[1].width - tx - sw) as usize;
-        r1.push(Span::raw(" ".repeat(fill)));
+        if fill > 0 {
+            r1.push(Span::raw(" ".repeat(fill)));
+        }
         r1.push(Span::styled(
             search_str,
             Style::default()
@@ -465,18 +477,46 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
             }
         }
         _ => {
+            let alarm_cnt = state.alerts.len();
             let anomaly_cnt = state.track_anomalies.len();
             let fusion_cnt = state.fusion_clusters.len();
+            let conflict_cnt = state.acled_events.len();
+            let notam_cnt = state.airspace_warnings.len();
+
             r2.push(Span::styled(
-                format!(
-                    "ISTASYON: {:.4}N, {:.4}E │ ANOMALI: {} │ FUZYON: {} │ KABLO: {} │ {} ",
-                    state.station_lat,
-                    state.station_lon,
-                    anomaly_cnt,
-                    fusion_cnt,
-                    state.subsea_cables.len(),
-                    state.live_status
-                ),
+                format!("ISTASYON: {:.2}N,{:.2}E", state.station_lat, state.station_lon),
+                Style::default().fg(FG_SECONDARY),
+            ));
+            r2.push(Span::styled(" │ ", Style::default().fg(BORDER_DIM)));
+            r2.push(Span::styled(
+                format!("ALARM:{}", alarm_cnt),
+                Style::default()
+                    .fg(if alarm_cnt > 0 { TELETEXT_RED } else { FG_MUTED })
+                    .add_modifier(if alarm_cnt > 0 { Modifier::BOLD } else { Modifier::empty() }),
+            ));
+            r2.push(Span::styled(" │ ", Style::default().fg(BORDER_DIM)));
+            r2.push(Span::styled(
+                format!("ANOMALI:{}", anomaly_cnt),
+                Style::default().fg(TELETEXT_YELLOW),
+            ));
+            r2.push(Span::styled(" │ ", Style::default().fg(BORDER_DIM)));
+            r2.push(Span::styled(
+                format!("FUZYON:{}", fusion_cnt),
+                Style::default().fg(TELETEXT_CYAN),
+            ));
+            r2.push(Span::styled(" │ ", Style::default().fg(BORDER_DIM)));
+            r2.push(Span::styled(
+                format!("CATISMA:{}", conflict_cnt),
+                Style::default().fg(TELETEXT_RED),
+            ));
+            r2.push(Span::styled(" │ ", Style::default().fg(BORDER_DIM)));
+            r2.push(Span::styled(
+                format!("NOTAM:{}", notam_cnt),
+                Style::default().fg(TELETEXT_MAGENTA),
+            ));
+            r2.push(Span::styled(" │ ", Style::default().fg(BORDER_DIM)));
+            r2.push(Span::styled(
+                state.live_status.clone(),
                 Style::default().fg(FG_SECONDARY),
             ));
         }
@@ -505,8 +545,13 @@ fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
         ActiveView::Sigint => {
             " [S] Ses │ [F] Frekans │ [U] Mod │ [L] Kilit │ [V] WAV │ [T] Tarama │ [X] VOX │ [C] CW │ [N] Sonraki "
         }
+        ActiveView::Osint => {
+            " [0-4] Haber Filtre │ [5] GDELT Catisma Tablosu │ [Ok/Enter/Tikla] Detay & Harita Odak "
+        }
         ActiveView::Satint => " [Ok/PgUpDn] Uydu Sec │ [Enter] SGP4 Dosyasi │ [F2] Yer Izi Haritada ",
-        ActiveView::Masint => " [1-5] Deprem / Termal / CBRN / Catisma / NOTAM │ [Ok/Enter] Detay ",
+        ActiveView::Masint => {
+            " [1] Deprem [2] Termal [3] CBRN [4] NOTAM/SIGMET │ [Ok/Enter/Tikla] Harita Odak & Dosya "
+        }
         ActiveView::Cyberint => " [IP Yaz+Enter] Hibrit BGP/Port Tara │ [Ok/Ctrl+O] CISA/IODA Detay ",
         ActiveView::Notepad => " [Tab] Arsiv/Editor │ [Ctrl+S] Kaydet │ [Ctrl+N] Yeni │ [Ctrl+H] HTML │ [F5] Zaman ",
         _ => " [F1-F11] Sekme │ [Shift+A] AI SITREP │ [Ctrl+E] Rapor │ [Q] Cikis ",

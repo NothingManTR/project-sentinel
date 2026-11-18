@@ -57,6 +57,8 @@ pub enum HitTarget {
     AiRefresh,
     NotepadFile(usize),
     NotepadAction(usize),
+    AlertItem(usize),
+    FusionAlert(usize),
 }
 
 #[derive(Debug, Clone, Default)]

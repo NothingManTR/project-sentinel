@@ -54,7 +54,7 @@ pub fn render_dashboard_view(frame: &mut Frame, area: Rect, state: &mut AppState
 
     // 3-Sutunlu C4ISR Komuta Merkezi Mimarisi:
     // Sol (%48): Taktik Harita [0] (Ust) + Yakinlik Radari Tablosu [2] (Alt)
-    // Orta (%27): Canli Coklu-Istihbarat Akis Sutunu ([4] SIGINT EAM + [3] Uydu/Sismik/Catisma + [1] OSINT/Siber)
+    // Orta (%27): Canli Coklu-Istihbarat Akis Sutunu ([4] SIGINT EAM + [3] Uydu/Sismik/NOTAM + [1] OSINT/Catisma/Siber)
     // Sag (%25): [5] Kalici Hedef Denetcisi, Telemetri ve Operasyonel Komut Paneli
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -348,7 +348,7 @@ fn render_sat_and_seismic_feed(frame: &mut Frame, area: Rect, state: &mut AppSta
     let part = (avail / 3).max(2);
 
     let mut row_y = area.y + 1;
-    for (idx, sat) in state.satellites.iter().take(part).enumerate() {
+    for (idx, sat) in state.satellites.iter().take(part.min(avail)).enumerate() {
         let status = if sat.el_deg > 0.0 {
             format!("EL:{:+.0} deg (UFUKTA)", sat.el_deg)
         } else {
@@ -405,11 +405,90 @@ fn render_sat_and_seismic_feed(frame: &mut Frame, area: Rect, state: &mut AppSta
         }
     }
 
+    for (n_idx, aw) in state
+        .airspace_warnings
+        .iter()
+        .enumerate()
+        .take(avail.saturating_sub(lines.len()))
+    {
+        let col = match aw.kind.as_str() {
+            "NOTAM-CONFLICT" => TELETEXT_RED,
+            "GPS-JAM" => TELETEXT_MAGENTA,
+            _ => TELETEXT_YELLOW,
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                "[NOTAM] ",
+                Style::default().fg(col).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}: {}", aw.fir_or_zone, aw.hazard),
+                Style::default().fg(FG_PRIMARY),
+            ),
+        ]));
+        if row_y < area.y + area.height.saturating_sub(1) {
+            state.hit_tester.register(
+                Rect {
+                    x: area.x + 1,
+                    y: row_y,
+                    width: area.width.saturating_sub(2),
+                    height: 1,
+                },
+                HitTarget::TableRow(54, n_idx),
+            );
+            row_y += 1;
+        }
+    }
+
+    let sat_border = if state.active_tile == 3 { BORDER_ACTIVE } else { BORDER_DIM };
+    let p = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(sat_border))
+            .title(" [ [4] UYDU (F8), SISMIK & NOTAM (F9) ] ")
+            .style(Style::default().bg(BG_PANEL)),
+    );
+    frame.render_widget(p, area);
+}
+
+fn render_osint_and_cyber_feed(frame: &mut Frame, area: Rect, state: &mut AppState) {
+    let mut lines = Vec::new();
+    let avail = area.height.saturating_sub(2) as usize;
+    let part = (avail / 3).max(2);
+    let mut row_y = area.y + 1;
+
+    for (idx, item) in state.news.iter().enumerate().take(part.min(avail)) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} ", item.published.format("%H:%M")),
+                Style::default().fg(FG_MUTED),
+            ),
+            Span::styled(
+                format!("[{}] ", item.source),
+                Style::default().fg(TELETEXT_YELLOW),
+            ),
+            Span::styled(item.title.clone(), Style::default().fg(FG_PRIMARY)),
+        ]));
+        if row_y < area.y + area.height.saturating_sub(1) {
+            state.hit_tester.register(
+                Rect {
+                    x: area.x + 1,
+                    y: row_y,
+                    width: area.width.saturating_sub(2),
+                    height: 1,
+                },
+                HitTarget::TableRow(1, idx),
+            );
+            row_y += 1;
+        }
+    }
+
     for (a_idx, ev) in state
         .acled_events
         .iter()
         .enumerate()
-        .take(avail.saturating_sub(lines.len()))
+        .take(part.min(avail.saturating_sub(lines.len())))
     {
         let col = if ev.fatalities > 0 { TELETEXT_RED } else { TELETEXT_YELLOW };
         lines.push(Line::from(vec![
@@ -431,50 +510,6 @@ fn render_sat_and_seismic_feed(frame: &mut Frame, area: Rect, state: &mut AppSta
                     height: 1,
                 },
                 HitTarget::TableRow(52, a_idx),
-            );
-            row_y += 1;
-        }
-    }
-
-    let sat_border = if state.active_tile == 3 { BORDER_ACTIVE } else { BORDER_DIM };
-    let p = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(sat_border))
-            .title(" [ [4] UYDU, SISMIK & CATISMA / GDELT (F8/F9) ] ")
-            .style(Style::default().bg(BG_PANEL)),
-    );
-    frame.render_widget(p, area);
-}
-
-fn render_osint_and_cyber_feed(frame: &mut Frame, area: Rect, state: &mut AppState) {
-    let mut lines = Vec::new();
-    let avail = area.height.saturating_sub(2) as usize;
-    let half = (avail / 2).max(2);
-    let mut row_y = area.y + 1;
-
-    for (idx, item) in state.news.iter().enumerate().take(half) {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{} ", item.published.format("%H:%M")),
-                Style::default().fg(FG_MUTED),
-            ),
-            Span::styled(
-                format!("[{}] ", item.source),
-                Style::default().fg(TELETEXT_YELLOW),
-            ),
-            Span::styled(item.title.clone(), Style::default().fg(FG_PRIMARY)),
-        ]));
-        if row_y < area.y + area.height.saturating_sub(1) {
-            state.hit_tester.register(
-                Rect {
-                    x: area.x + 1,
-                    y: row_y,
-                    width: area.width.saturating_sub(2),
-                    height: 1,
-                },
-                HitTarget::TableRow(1, idx),
             );
             row_y += 1;
         }
@@ -514,7 +549,7 @@ fn render_osint_and_cyber_feed(frame: &mut Frame, area: Rect, state: &mut AppSta
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(os_border))
-            .title(" [ [2] KRIZ HABER AKISI (F6) & SIBER (F7) ] ")
+            .title(" [ [2] OSINT HABER, CATISMA (F6) & SIBER (F7) ] ")
             .style(Style::default().bg(BG_PANEL)),
     );
     frame.render_widget(p, area);

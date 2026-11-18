@@ -130,7 +130,7 @@ pub struct AppState {
     pub map_high_contrast: bool,
     pub map_style: MapRenderStyle,
     pub map_aircraft_shapes: bool,
-    pub geoint_layers: u16,            // Bitmask: 0..6 klasik, 7=SDR, 8=Kablo(K-1), 9=HavaDurumu(A-3), 10=Fuzyon(K-4)
+    pub geoint_layers: u16,            // Bitmask: 0..6 klasik, 7=SDR, 8=Kablo(K-1), 9=HavaDurumu(A-3), 10=Fuzyon(K-4), 11=NOTAM/SIGMET/GPS-JAM(N-4)
     pub selected_target_id: Option<String>,
     pub follow_target_id: Option<String>,
     pub target_trails: HashMap<String, Vec<(f64, f64)>>,
@@ -291,7 +291,7 @@ impl AppState {
             map_high_contrast: true,
             map_style: MapRenderStyle::HalfBlockTerrain,
             map_aircraft_shapes: false,
-            geoint_layers: 0b0000_0100_0111_1111, // Klasik katmanlar + K-4 Fuzyon (bit 10) acik; SDR/Kablo/HavaDur opt-in
+            geoint_layers: 0b0000_1100_0111_1111, // Klasik katmanlar + K-4 Fuzyon (bit 10) + N-4 NOTAM (bit 11) acik; SDR/Kablo/HavaDur opt-in
             selected_target_id: None,
             follow_target_id: None,
             target_trails: HashMap::new(),
@@ -1747,5 +1747,14 @@ mod tests {
         assert!(html_content.contains("NOTAM-CONFLICT"));
 
         let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_default_geoint_layers_include_notam_and_conflict() {
+        let state = AppState::new(AppConfig::default());
+        assert_ne!(state.geoint_layers & (1 << 11), 0);
+        assert_ne!(state.geoint_layers & 8, 0);
+        assert_ne!(state.geoint_layers & 16, 0);
+        assert_ne!(state.geoint_layers & 1024, 0);
     }
 }

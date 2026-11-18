@@ -116,16 +116,22 @@ pub fn render_satint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
         .take(visible_rows)
         .enumerate()
     {
-        let is_sel = row_offset == 0 || (state.selected_domain == 3 && state.selected_row == idx);
+        let is_sel = (state.selected_domain == 3 && state.selected_row == idx)
+            || (state.selected_domain != 3 && start_idx == idx);
         let is_visible = sat.el_deg > 0.0;
+        let zebra_bg = if row_offset % 2 == 0 {
+            BG_PANEL
+        } else {
+            BG_PRIMARY
+        };
         let row_style = if is_sel {
             Style::default().fg(TELETEXT_YELLOW).bg(BG_HIGHLIGHT).add_modifier(Modifier::BOLD)
         } else if is_visible {
-            Style::default().fg(TELETEXT_GREEN).add_modifier(Modifier::BOLD)
+            Style::default().fg(TELETEXT_GREEN).bg(zebra_bg).add_modifier(Modifier::BOLD)
         } else if sat.next_pass_secs < 300 {
-            Style::default().fg(TELETEXT_CYAN)
+            Style::default().fg(TELETEXT_CYAN).bg(zebra_bg)
         } else {
-            Style::default().fg(TELETEXT_MAGENTA)
+            Style::default().fg(TELETEXT_MAGENTA).bg(zebra_bg)
         };
 
         let countdown_str = if sat.el_deg > 0.0 {
