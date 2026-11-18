@@ -774,7 +774,7 @@ impl App {
                         self.audio.play(SoundEffect::Click);
                         return;
                     }
-                    KeyCode::Char(c) if ('1'..='4').contains(&c) => {
+                    KeyCode::Char(c) if ('1'..='5').contains(&c) => {
                         let tab = (c as usize) - ('1' as usize);
                         Self::apply_masint_tab(&mut st, tab);
                         self.audio.play(SoundEffect::Click);
@@ -787,6 +787,21 @@ impl App {
                             KeyCode::PageUp => -10,
                             _ => 10,
                         };
+                        if st.masint_tab == 4 {
+                            let a_len = st.alerts.len();
+                            let f_len = st.fusion_clusters.len();
+                            let total = a_len + f_len;
+                            let max_pos = total.saturating_sub(1);
+                            st.alert_scroll = Self::step_scroll(st.alert_scroll, delta, max_pos);
+                            if st.alert_scroll < a_len {
+                                let orig_idx = a_len.saturating_sub(1 + st.alert_scroll);
+                                let _ = Self::handle_alert_click(&mut st, orig_idx, false);
+                            } else if f_len > 0 {
+                                let fc_idx = (st.alert_scroll - a_len).min(f_len - 1);
+                                let _ = Self::focus_fusion_cluster(&mut st, fc_idx, false);
+                            }
+                            return;
+                        }
                         let (dom, max_pos) = match st.masint_tab {
                             1 => (51, st.firms_fires.len().saturating_sub(1)),
                             2 => (53, st.radiation_measurements.len().saturating_sub(1)),
@@ -804,6 +819,26 @@ impl App {
                         return;
                     }
                     KeyCode::Enter => {
+                        if st.masint_tab == 4 {
+                            let a_len = st.alerts.len();
+                            let f_len = st.fusion_clusters.len();
+                            let total = a_len + f_len;
+                            if total > 0 {
+                                let scroll = st.alert_scroll.min(total - 1);
+                                if scroll < a_len {
+                                    let orig_idx = a_len.saturating_sub(1 + scroll);
+                                    if let Some(sfx) = Self::handle_alert_click(&mut st, orig_idx, true) {
+                                        self.audio.play(sfx);
+                                    }
+                                } else {
+                                    let fc_idx = scroll - a_len;
+                                    if Self::focus_fusion_cluster(&mut st, fc_idx, true) {
+                                        self.audio.play(SoundEffect::Blip);
+                                    }
+                                }
+                            }
+                            return;
+                        }
                         let (dom, scroll, len) = match st.masint_tab {
                             1 => (51, st.geo_scroll, st.firms_fires.len()),
                             2 => (53, st.radiation_scroll, st.radiation_measurements.len()),
@@ -1052,14 +1087,14 @@ impl App {
                 self.audio.play(SoundEffect::Click);
             }
             KeyCode::Tab => {
-                st.active_tile = (st.active_tile + 1) % 6;
+                st.active_tile = (st.active_tile + 1) % 7;
                 if st.zoomed_tile.is_some() {
                     st.zoomed_tile = Some(st.active_tile);
                 }
                 self.audio.play(SoundEffect::Click);
             }
             KeyCode::BackTab => {
-                st.active_tile = if st.active_tile == 0 { 5 } else { st.active_tile - 1 };
+                st.active_tile = if st.active_tile == 0 { 6 } else { st.active_tile - 1 };
                 if st.zoomed_tile.is_some() {
                     st.zoomed_tile = Some(st.active_tile);
                 }
@@ -1071,6 +1106,7 @@ impl App {
             KeyCode::Char('4') => { st.active_tile = 3; if st.zoomed_tile.is_some() { st.zoomed_tile = Some(3); } self.audio.play(SoundEffect::Click); }
             KeyCode::Char('5') => { st.active_tile = 4; if st.zoomed_tile.is_some() { st.zoomed_tile = Some(4); } self.audio.play(SoundEffect::Click); }
             KeyCode::Char('6') => { st.active_tile = 5; if st.zoomed_tile.is_some() { st.zoomed_tile = Some(5); } self.audio.play(SoundEffect::Click); }
+            KeyCode::Char('7') => { st.active_tile = 6; if st.zoomed_tile.is_some() { st.zoomed_tile = Some(6); } self.audio.play(SoundEffect::Click); }
             KeyCode::Char('z') | KeyCode::Char('Z') | KeyCode::Char(' ') => {
                 let active = st.active_tile;
                 st.toggle_zoom(active);
@@ -1143,6 +1179,36 @@ impl App {
             {
                 st.map_center_lon = (st.map_center_lon + 5.0 / st.map_zoom).clamp(-180.0, 180.0);
             }
+            KeyCode::Up
+                if st.active_view == ActiveView::Dashboard && st.active_tile == 6 =>
+            {
+                let a_len = st.alerts.len();
+                let f_len = st.fusion_clusters.len();
+                let max_pos = (a_len + f_len).saturating_sub(1);
+                st.alert_scroll = Self::step_scroll(st.alert_scroll, -1, max_pos);
+                if st.alert_scroll < a_len {
+                    let orig_idx = a_len.saturating_sub(1 + st.alert_scroll);
+                    let _ = Self::handle_alert_click(&mut st, orig_idx, false);
+                } else if f_len > 0 {
+                    let fc_idx = (st.alert_scroll - a_len).min(f_len - 1);
+                    let _ = Self::focus_fusion_cluster(&mut st, fc_idx, false);
+                }
+            }
+            KeyCode::Down
+                if st.active_view == ActiveView::Dashboard && st.active_tile == 6 =>
+            {
+                let a_len = st.alerts.len();
+                let f_len = st.fusion_clusters.len();
+                let max_pos = (a_len + f_len).saturating_sub(1);
+                st.alert_scroll = Self::step_scroll(st.alert_scroll, 1, max_pos);
+                if st.alert_scroll < a_len {
+                    let orig_idx = a_len.saturating_sub(1 + st.alert_scroll);
+                    let _ = Self::handle_alert_click(&mut st, orig_idx, false);
+                } else if f_len > 0 {
+                    let fc_idx = (st.alert_scroll - a_len).min(f_len - 1);
+                    let _ = Self::focus_fusion_cluster(&mut st, fc_idx, false);
+                }
+            }
             KeyCode::Up | KeyCode::Char('w')
                 if matches!(st.active_view, ActiveView::Dashboard | ActiveView::Geoint) =>
             {
@@ -1156,7 +1222,7 @@ impl App {
             KeyCode::Char('o') | KeyCode::Char('O') => {
                 let dom = st.selected_domain;
                 let row = st.selected_row;
-                if matches!(dom, 1 | 3 | 4 | 30 | 50 | 51 | 52 | 53 | 54 | 55) {
+                if matches!(dom, 1 | 3 | 4 | 30 | 50 | 51 | 52 | 53 | 54 | 55 | 56) {
                     if Self::open_item_dossier(&mut st, dom, row) {
                         self.audio.play(SoundEffect::Blip);
                     }
@@ -1176,16 +1242,36 @@ impl App {
             }
             KeyCode::Enter => {
                 let active = st.active_tile;
-                let (dom, row_idx) = match active {
-                    1 => (1, st.news_scroll),
-                    2 => (2, st.target_scroll),
-                    3 => (3, st.sat_scroll),
-                    4 => (30, st.eam_scroll),
-                    5 => (5, st.geo_scroll),
-                    _ => (active, 0),
-                };
-                if Self::open_item_dossier(&mut st, dom, row_idx) {
-                    self.audio.play(SoundEffect::Blip);
+                if active == 6 {
+                    let a_len = st.alerts.len();
+                    let f_len = st.fusion_clusters.len();
+                    let total = a_len + f_len;
+                    if total > 0 {
+                        let scroll = st.alert_scroll.min(total - 1);
+                        if scroll < a_len {
+                            let orig_idx = a_len.saturating_sub(1 + scroll);
+                            if let Some(sfx) = Self::handle_alert_click(&mut st, orig_idx, true) {
+                                self.audio.play(sfx);
+                            }
+                        } else {
+                            let fc_idx = scroll - a_len;
+                            if Self::focus_fusion_cluster(&mut st, fc_idx, true) {
+                                self.audio.play(SoundEffect::Blip);
+                            }
+                        }
+                    }
+                } else {
+                    let (dom, row_idx) = match active {
+                        1 => (1, st.news_scroll),
+                        2 => (2, st.target_scroll),
+                        3 => (3, st.sat_scroll),
+                        4 => (30, st.eam_scroll),
+                        5 => (5, st.geo_scroll),
+                        _ => (active, 0),
+                    };
+                    if Self::open_item_dossier(&mut st, dom, row_idx) {
+                        self.audio.play(SoundEffect::Blip);
+                    }
                 }
             }
             _ => {}
@@ -1611,11 +1697,22 @@ impl App {
                             }
                         }
                         HitTarget::AlertItem(alert_idx) => {
+                            if st.active_view == ActiveView::Dashboard {
+                                st.active_tile = 6;
+                            }
+                            let a_len = st.alerts.len();
+                            if alert_idx < a_len {
+                                st.alert_scroll = a_len.saturating_sub(1 + alert_idx);
+                            }
                             if let Some(sfx) = Self::handle_alert_click(&mut st, alert_idx, is_double_click) {
                                 self.audio.play(sfx);
                             }
                         }
                         HitTarget::FusionAlert(fc_idx) => {
+                            if st.active_view == ActiveView::Dashboard {
+                                st.active_tile = 6;
+                            }
+                            st.alert_scroll = st.alerts.len() + fc_idx;
                             if Self::focus_fusion_cluster(&mut st, fc_idx, is_double_click) {
                                 self.audio.play(SoundEffect::Blip);
                             } else {
@@ -1752,8 +1849,12 @@ impl App {
                 } else if st.active_view == ActiveView::SeaTracks {
                     st.sea_scroll = st.sea_scroll.saturating_sub(2);
                 } else if st.active_view == ActiveView::Masint {
-                    st.radiation_scroll = st.radiation_scroll.saturating_sub(2);
-                    st.geo_scroll = st.geo_scroll.saturating_sub(2);
+                    if st.masint_tab == 4 {
+                        st.alert_scroll = st.alert_scroll.saturating_sub(2);
+                    } else {
+                        st.radiation_scroll = st.radiation_scroll.saturating_sub(2);
+                        st.geo_scroll = st.geo_scroll.saturating_sub(2);
+                    }
                 } else if st.active_view == ActiveView::Sigint {
                     if matches!(st.hit_tester.hit_test(col, row), Some(HitTarget::SdrNodeList) | Some(HitTarget::SelectSdrNode(_))) {
                         st.sdr_scroll = st.sdr_scroll.saturating_sub(2);
@@ -1777,6 +1878,7 @@ impl App {
                         3 => st.sat_scroll = st.sat_scroll.saturating_sub(2),
                         4 => st.cyber_scroll = st.cyber_scroll.saturating_sub(2),
                         5 => st.geo_scroll = st.geo_scroll.saturating_sub(2),
+                        6 => st.alert_scroll = st.alert_scroll.saturating_sub(2),
                         _ => {}
                     }
                 }
@@ -1790,8 +1892,12 @@ impl App {
                 } else if st.active_view == ActiveView::SeaTracks {
                     st.sea_scroll = st.sea_scroll.saturating_add(2);
                 } else if st.active_view == ActiveView::Masint {
-                    st.radiation_scroll = st.radiation_scroll.saturating_add(2);
-                    st.geo_scroll = st.geo_scroll.saturating_add(2);
+                    if st.masint_tab == 4 {
+                        st.alert_scroll = st.alert_scroll.saturating_add(2);
+                    } else {
+                        st.radiation_scroll = st.radiation_scroll.saturating_add(2);
+                        st.geo_scroll = st.geo_scroll.saturating_add(2);
+                    }
                 } else if st.active_view == ActiveView::Sigint {
                     if matches!(st.hit_tester.hit_test(col, row), Some(HitTarget::SdrNodeList) | Some(HitTarget::SelectSdrNode(_))) {
                         let max = st.sdr_nodes.len().saturating_sub(1);
@@ -1816,6 +1922,7 @@ impl App {
                         3 => st.sat_scroll = st.sat_scroll.saturating_add(2),
                         4 => st.cyber_scroll = st.cyber_scroll.saturating_add(2),
                         5 => st.geo_scroll = st.geo_scroll.saturating_add(2),
+                        6 => st.alert_scroll = st.alert_scroll.saturating_add(2),
                         _ => {}
                     }
                 }
@@ -2411,6 +2518,23 @@ impl App {
                     return true;
                 }
             }
+            56 => {
+                if let Some(a) = st.alerts.get(row_idx) {
+                    st.open_dialog(
+                        format!("ALARM-DOSSIER: {} [{}]", a.domain, a.severity.as_str()),
+                        vec![
+                            "=== OTOMATIK ANOMALI, SENSOR VE KORELASYON ALARM DOSYASI ===".to_string(),
+                            format!("Alarm Zamani (ZULU)   : {}", a.timestamp.format("%Y-%m-%d %H:%M:%S UTC")),
+                            format!("Disiplin / Alan       : {}", a.domain),
+                            format!("Tehdit Onem Seviyesi  : {}", a.severity.as_str()),
+                            format!("Ilgili Hedef Kimligi  : {}", a.target_id.as_deref().unwrap_or("Genel / Coklu-Hedef")),
+                            "--- ALARM & ANOMALI DETAYI ---".to_string(),
+                            a.message.clone(),
+                        ],
+                    );
+                    return true;
+                }
+            }
             5 => {
                 let q_len = st.earthquakes.len();
                 let f_len = st.firms_fires.len();
@@ -2614,9 +2738,22 @@ impl App {
     }
 
     fn apply_masint_tab(st: &mut AppState, tid: usize) {
-        st.masint_tab = tid.min(3);
+        st.masint_tab = tid.min(4);
         st.geo_scroll = 0;
         st.radiation_scroll = 0;
+        st.alert_scroll = 0;
+        if st.masint_tab == 4 {
+            let a_len = st.alerts.len();
+            if a_len > 0 {
+                let _ = Self::handle_alert_click(st, a_len - 1, false);
+            } else if !st.fusion_clusters.is_empty() {
+                let _ = Self::focus_fusion_cluster(st, 0, false);
+            } else {
+                st.selected_domain = 56;
+                st.selected_row = 0;
+            }
+            return;
+        }
         let dom = match st.masint_tab {
             1 => 51,
             2 => 53,
@@ -2654,9 +2791,41 @@ impl App {
         };
 
         if tid == "SYS:DEFCON" {
-            Self::open_defcon_dialog(st);
+            st.selected_domain = 56;
+            st.selected_row = alert_idx;
+            if is_double_click {
+                Self::open_defcon_dialog(st);
+            }
             return Some(SoundEffect::Blip);
         }
+
+        if let Some(eq_id) = tid.strip_prefix("MASINT:") {
+            let pos_opt = st.earthquakes.iter().position(|q| q.id == eq_id);
+            if let Some(pos) = pos_opt {
+                st.follow_target_id = None;
+                Self::select_item_for_inspector(st, 50, pos);
+                st.map_zoom = st.map_zoom.max(4.0);
+                if let Some(q) = st.earthquakes.get(pos) {
+                    st.live_status = format!(
+                        "MASINT PATLAMA ALARMI: M{:.1} (d={:.1}km) {} ({:.2}N, {:.2}E)",
+                        q.mag, q.depth_km, q.place, q.lat, q.lon
+                    );
+                }
+                return Some(if is_double_click && Self::open_item_dossier(st, 50, pos) {
+                    SoundEffect::Blip
+                } else {
+                    SoundEffect::Click
+                });
+            }
+        }
+
+        let extracted_id = if let Some(rest) = tid.strip_prefix("AAR:") {
+            rest.split(':').next().unwrap_or(rest)
+        } else if let Some(rest) = tid.strip_prefix("STS:") {
+            rest.split(':').next().unwrap_or(rest)
+        } else {
+            tid.strip_prefix("ANOM:").unwrap_or(tid)
+        };
 
         if let Some(ev_id) = tid.strip_prefix("ACLED:") {
             let pos_opt = st.acled_events.iter().position(|e| e.event_id == ev_id);
@@ -2693,7 +2862,7 @@ impl App {
             });
         }
 
-        let raw_id = tid.strip_prefix("ANOM:").unwrap_or(tid).to_string();
+        let raw_id = extracted_id.to_string();
         if st.follow_target_id.as_deref() != Some(raw_id.as_str()) {
             st.follow_target_id = None;
         }
@@ -2708,7 +2877,27 @@ impl App {
             .cloned();
 
         let Some(t) = found else {
+            if let Some(dark) = st.dark_ships.iter().find(|d| d.id == raw_id).cloned() {
+                st.map_center_lat = dark.dr_lat;
+                st.map_center_lon = dark.dr_lon;
+                st.map_zoom = st.map_zoom.max(4.5);
+                st.selected_domain = 56;
+                st.selected_row = alert_idx;
+                st.live_status = format!(
+                    "DARK-SHIP DR KONUMU: {} ({}) -> {:.2}N, {:.2}E ({}dk sessiz)",
+                    dark.callsign, dark.id, dark.dr_lat, dark.dr_lon, dark.silent_mins
+                );
+                if is_double_click && Self::open_item_dossier(st, 56, alert_idx) {
+                    return Some(SoundEffect::Blip);
+                }
+                return Some(SoundEffect::Click);
+            }
+            st.selected_domain = 56;
+            st.selected_row = alert_idx;
             st.live_status = format!("ALARM KAYDI: {}", alert.message);
+            if is_double_click && Self::open_item_dossier(st, 56, alert_idx) {
+                return Some(SoundEffect::Blip);
+            }
             return Some(SoundEffect::Click);
         };
 
@@ -2961,14 +3150,14 @@ impl App {
                 "> [F6] OSINT     : Kriz Haberleri [0-4] & GDELT/ACLED Catisma Tablosu [5]".to_string(),
                 "> [F7] SIBER     : Hibrit Kesif (Shodan + RIPE BGP + 16-Port Tarama), CISA & IODA".to_string(),
                 "> [F8] UYDU      : CelesTrak GP SGP4 Uydu Polar Radar Skobu & Gecisler (Ok/Enter)".to_string(),
-                "> [F9] AFET/KRIZ : Deprem, FIRMS Termal, Safecast CBRN & NOTAM/SIGMET [1-4]".to_string(),
+                "> [F9] AFET/KRIZ : Deprem, FIRMS Termal, Safecast CBRN, NOTAM & Anomali/Alarmlar [1-5]".to_string(),
                 "> [F10/F11]      : Notlar & AI Rapor Arsivi (Tab/Ok/Ctrl+N/Ctrl+S) / Hesap".to_string(),
                 "--- 2. SAG DENETCI PANELI VE HARITA KONTROLLERI ---".to_string(),
                 "> [Tek Tik]      : Tablo veya haritadaki hedefi Sag Denetci Panelinde inceler".to_string(),
                 "> [Cift Tik/Ent] : Hedefin tam ekran dosyasini acar".to_string(),
                 "> [I] Tusu       : Sag Kalici Denetci Panelini goster/gizle".to_string(),
                 "> [Shift+W / WEB]: http://127.0.0.1:8090 uzerinde canli Leaflet haritasini acar".to_string(),
-                "> [WASD / Oklar] : F1/F2 haritasini kaydirir | [1-6 + Z/Esc]: Paneli tam ekran buyut".to_string(),
+                "> [WASD / Oklar] : F1/F2 haritasini kaydirir | [1-7 + Z/Esc]: Paneli tam ekran buyut".to_string(),
                 "> [G / F / B]    : Haritada Odakla (G) | Takip Kilidi (F) | Izleme Listesi (B)".to_string(),
                 "> [x:Ntm]        : NOTAM / SIGMET / GPS-JAM Hava Sahasi Cokgen Katmani".to_string(),
                 "--- 3. GEMINI AI ANALIZ & DOSYA KAYIT KISAYOLLARI ---".to_string(),

@@ -575,7 +575,7 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
 fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let ctx_hints = match state.active_view {
         ActiveView::Dashboard | ActiveView::Splash => {
-            " [F1-F11] Sekme │ [Z] Panel Buyut │ [P] Sekiller │ [Enter/O] Tam Dosya │ [I] Denetci │ [A] AI SITREP "
+            " [1-7/Tab] Panel │ [Z] Buyut │ [P] Sekiller │ [Enter/O] Tam Dosya │ [I] Denetci │ [A] AI SITREP "
         }
         ActiveView::Geoint => {
             " [Surukle/WASD/Ok] Gez │ [+/-] Zoom │ [V] Stil │ [P] Sekil │ [I] Denetci │ [Shift+W] Web Harita "
@@ -594,7 +594,7 @@ fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
         }
         ActiveView::Satint => " [Ok/PgUpDn] Uydu Sec │ [Enter] SGP4 Dosyasi │ [F2] Yer Izi Haritada ",
         ActiveView::Masint => {
-            " [1] Deprem [2] Termal [3] CBRN [4] NOTAM/SIGMET │ [Ok/Enter/Tikla] Harita Odak & Dosya "
+            " [1] Deprem [2] Termal [3] CBRN [4] NOTAM [5] Anomali & Alarmlar │ [Ok/Enter/Tikla] Odak & Dosya "
         }
         ActiveView::Cyberint => " [IP Yaz+Enter] Hibrit BGP/Port Tara │ [Ok/Ctrl+O] CISA/IODA Detay ",
         ActiveView::Notepad => " [Tab] Arsiv/Editor │ [Ctrl+S] Kaydet │ [Ctrl+N] Yeni │ [Ctrl+H] HTML │ [F5] Zaman ",

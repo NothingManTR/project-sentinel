@@ -128,9 +128,9 @@ pub struct AppState {
     pub previous_view: ActiveView,
 
     // Pencere & Mozaik Yönetimi (Dashboard içindeki paneller)
-    pub active_tile: usize,            // 0: P100 Harita, 1: P200 Haber, 2: P300 Hava/Deniz, 3: P400 Uydu, 4: P500 Siber, 5: P600 Afet
+    pub active_tile: usize,            // 0: P100 Harita, 1: P200 Haber, 2: P300 Hava/Deniz, 3: P400 Uydu, 4: P500 Siber, 5: P600 Denetci, 6: P700 Alarmlar
     pub zoomed_tile: Option<usize>,    // None: Mozaik (Split-Tile), Some(i): Tam Ekran Zoom
-    pub minimized_tiles: [bool; 6],
+    pub minimized_tiles: [bool; 7],
     pub is_start_menu_open: bool,
     
     // Win98 Diyalog Kutusu (Dossier Popup)
@@ -254,8 +254,9 @@ pub struct AppState {
     pub eam_scroll: usize,
     pub sdr_scroll: usize,
     pub sigint_focus: usize,           // 0: KiwiSDR Alıcı Listesi (Varsayılan), 1: EAM Tablosu
-    pub masint_tab: usize,             // 0: Depremler (USGS/Kandilli/EMSC), 1: FIRMS Termal, 2: Safecast CBRN
+    pub masint_tab: usize,             // 0: Depremler (USGS/Kandilli/EMSC), 1: FIRMS Termal, 2: Safecast CBRN, 3: NOTAM, 4: Anomali & Alarmlar
     pub radiation_scroll: usize,
+    pub alert_scroll: usize,
     
     // Filtreler (Hava Küresel/CENTCOM/Askeri ve Deniz Seçimi)
     pub air_filter: usize,             // 0: Küresel Tümü, 1: CENTCOM Tümü, 2: CENTCOM Askeri, 3: Küresel Askeri, 4: TR/EUCOM, 5: 7700 Acil
@@ -308,7 +309,7 @@ impl AppState {
             previous_view: ActiveView::Dashboard,
             active_tile: 0,
             zoomed_tile: None,
-            minimized_tiles: [false; 6],
+            minimized_tiles: [false; 7],
             is_start_menu_open: false,
             is_dialog_open: false,
             dialog_title: String::new(),
@@ -564,6 +565,7 @@ impl AppState {
             sigint_focus: 0,
             masint_tab: 0,
             radiation_scroll: 0,
+            alert_scroll: 0,
             air_filter: 0,
             sea_filter: 0,
             news_filter: 0,
@@ -1384,7 +1386,7 @@ impl AppState {
     }
 
     pub fn toggle_minimize(&mut self, tile_idx: usize) {
-        if tile_idx < 6 {
+        if tile_idx < 7 {
             self.minimized_tiles[tile_idx] = !self.minimized_tiles[tile_idx];
             if self.zoomed_tile == Some(tile_idx) && self.minimized_tiles[tile_idx] {
                 self.zoomed_tile = None;

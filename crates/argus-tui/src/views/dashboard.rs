@@ -48,6 +48,10 @@ pub fn render_dashboard_view(frame: &mut Frame, area: Rect, state: &mut AppState
                 render_inspector_panel(frame, area, state);
                 return;
             }
+            6 => {
+                crate::views::masint::render_anomaly_alerts_table(frame, area, state);
+                return;
+            }
             _ => {}
         }
     }

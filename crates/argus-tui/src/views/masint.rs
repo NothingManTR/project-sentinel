@@ -57,6 +57,7 @@ pub fn render_masint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
         1 => render_firms_table(frame, table_area, state),
         2 => render_radiation_table(frame, table_area, state),
         3 => render_airspace_table(frame, table_area, state),
+        4 => render_anomaly_alerts_table(frame, table_area, state),
         _ => render_earthquakes_table(frame, table_area, state),
     }
 }
@@ -100,9 +101,16 @@ fn render_masint_header_bar(frame: &mut Frame, area: Rect, state: &mut AppState)
             3usize,
             format!("[4:NOTAM({})]", state.airspace_warnings.len()),
         ),
+        (
+            4usize,
+            format!(
+                "[5:ANOMALI/ALARM({})]",
+                state.alerts.len() + state.fusion_clusters.len()
+            ),
+        ),
     ];
 
-    let active_tab = if state.masint_tab <= 3 {
+    let active_tab = if state.masint_tab <= 4 {
         state.masint_tab
     } else {
         0
@@ -491,6 +499,125 @@ fn render_earthquakes_table(frame: &mut Frame, table_area: Rect, state: &mut App
     )));
     frame.render_widget(tbl, table_area);
     render_masint_scrollbar(frame, table_area, q_total, avail_h, scroll);
+}
+
+pub fn render_anomaly_alerts_table(frame: &mut Frame, table_area: Rect, state: &mut AppState) {
+    let avail_h = table_area.height.saturating_sub(3) as usize;
+    let alerts_rev: Vec<(usize, argus_core::types::AlertItem)> = state
+        .alerts
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (i, a.clone()))
+        .rev()
+        .collect();
+    let a_len = alerts_rev.len();
+    let f_len = state.fusion_clusters.len();
+    let total = a_len + f_len;
+    let scroll = state.alert_scroll.min(total.saturating_sub(1));
+
+    let header = masint_table_header(&[
+        "ZAMAN",
+        "ONEM",
+        "DISIPLIN",
+        "HEDEF ID",
+        "ANOMALI / ALARM & KORELASYON DETAYI",
+    ]);
+
+    let mut rows = Vec::new();
+    for offset in 0..avail_h {
+        let actual_idx = scroll + offset;
+        if actual_idx >= total {
+            break;
+        }
+        if actual_idx < a_len {
+            let (orig_idx, a) = &alerts_rev[actual_idx];
+            let is_sel = (state.selected_domain == 56 && state.selected_row == *orig_idx)
+                || (state.selected_domain != 56 && state.selected_domain != 55 && offset == 0);
+            let (sev_col, is_bold) = match a.severity {
+                argus_core::types::ThreatSeverity::Emergency
+                | argus_core::types::ThreatSeverity::Critical => (TELETEXT_RED, true),
+                argus_core::types::ThreatSeverity::Warning => (TELETEXT_YELLOW, false),
+                argus_core::types::ThreatSeverity::Advisory => (TELETEXT_CYAN, false),
+                argus_core::types::ThreatSeverity::Low => (TELETEXT_GREEN, false),
+            };
+            let row_st = masint_row_style(is_sel, offset, sev_col, is_bold);
+            let time_cell = if is_sel {
+                format!("> {}", a.timestamp.format("%H:%M:%S"))
+            } else {
+                format!("  {}", a.timestamp.format("%H:%M:%S"))
+            };
+            let tid = a.target_id.as_deref().unwrap_or("-");
+            rows.push(
+                Row::new(vec![
+                    Cell::from(time_cell),
+                    Cell::from(a.severity.as_str()),
+                    Cell::from(a.domain.clone()),
+                    Cell::from(tid.to_string()),
+                    Cell::from(a.message.replace('\n', " ")),
+                ])
+                .style(row_st),
+            );
+            state.hit_tester.register(
+                Rect {
+                    x: table_area.x + 1,
+                    y: table_area.y + 2 + offset as u16,
+                    width: table_area.width.saturating_sub(2),
+                    height: 1,
+                },
+                HitTarget::AlertItem(*orig_idx),
+            );
+        } else {
+            let fc_idx = actual_idx - a_len;
+            let Some(fc) = state.fusion_clusters.get(fc_idx) else {
+                continue;
+            };
+            let is_sel = state.selected_domain == 55 && state.selected_row == fc_idx;
+            let row_st = masint_row_style(is_sel, offset, TELETEXT_CYAN, true);
+            let time_cell = if is_sel {
+                "> K4-FUZYON".to_string()
+            } else {
+                "  K4-FUZYON".to_string()
+            };
+            rows.push(
+                Row::new(vec![
+                    Cell::from(time_cell),
+                    Cell::from(format!("SKOR {}", fc.score)),
+                    Cell::from(fc.domains.join("+")),
+                    Cell::from(format!("{:.2}N,{:.2}E", fc.lat, fc.lon)),
+                    Cell::from(fc.summary.replace('\n', " ")),
+                ])
+                .style(row_st),
+            );
+            state.hit_tester.register(
+                Rect {
+                    x: table_area.x + 1,
+                    y: table_area.y + 2 + offset as u16,
+                    width: table_area.width.saturating_sub(2),
+                    height: 1,
+                },
+                HitTarget::FusionAlert(fc_idx),
+            );
+        }
+    }
+
+    let tbl = Table::new(
+        rows,
+        [
+            Constraint::Length(12),
+            Constraint::Length(11),
+            Constraint::Length(15),
+            Constraint::Length(16),
+            Constraint::Min(32),
+        ],
+    )
+    .header(header)
+    .block(masint_table_block(format!(
+        " [ [7] CANLI ANOMALI, OTOMATIK ALARM & K-4 FUZYON MERKEZI ({}/{}) │ Tikla/Enter: Odak & Dosya ] ",
+        (scroll + 1).min(total),
+        total
+    )));
+    frame.render_widget(tbl, table_area);
+    render_masint_scrollbar(frame, table_area, total, avail_h, scroll);
 }
 
 fn masint_table_header<'a>(cols: &[&'a str]) -> Row<'a> {

@@ -292,6 +292,38 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
             ]));
             lines.push(Line::from(Span::styled(fc.summary.clone(), Style::default().fg(FG_PRIMARY))));
         }
+    } else if state.selected_domain == 56 {
+        if let Some(a) = state.alerts.get(state.selected_row).or_else(|| state.alerts.get(0)) {
+            let sev_col = match a.severity {
+                argus_core::types::ThreatSeverity::Emergency
+                | argus_core::types::ThreatSeverity::Critical => TELETEXT_RED,
+                argus_core::types::ThreatSeverity::Warning => TELETEXT_YELLOW,
+                argus_core::types::ThreatSeverity::Advisory => TELETEXT_CYAN,
+                argus_core::types::ThreatSeverity::Low => TELETEXT_GREEN,
+            };
+            lines.push(Line::from(Span::styled(
+                format!("ANOMALI & ALARM // {}", a.domain),
+                Style::default().fg(sev_col).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Onem / Zaman : ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    format!("{} │ {} UTC", a.severity.as_str(), a.timestamp.format("%H:%M:%S")),
+                    Style::default().fg(sev_col).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Hedef Kimligi: ", Style::default().fg(FG_SECONDARY)),
+                Span::styled(
+                    a.target_id.clone().unwrap_or_else(|| "-".to_string()),
+                    Style::default().fg(TELETEXT_CYAN),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                a.message.clone(),
+                Style::default().fg(FG_PRIMARY),
+            )));
+        }
     } else if state.selected_domain == 1 {
         if let Some(item) = state.news.get(state.selected_row).or_else(|| state.news.get(0)) {
             let sev_col = match item.severity {
@@ -635,7 +667,7 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
     }
 
     let show_air_photo = !state.is_dialog_open
-        && !matches!(state.selected_domain, 1 | 3 | 4 | 30 | 50 | 51 | 52 | 53 | 54 | 55)
+        && !matches!(state.selected_domain, 1 | 3 | 4 | 30 | 50 | 51 | 52 | 53 | 54 | 55 | 56)
         && inspected_track
             .as_ref()
             .is_some_and(|t| t.domain == Domain::Air);
@@ -796,18 +828,32 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
     let max_w = chunks[2].width.saturating_sub(3) as usize;
     let mut alert_lines = Vec::new();
 
-    let alerts: Vec<_> = state.alerts.iter().enumerate().collect();
-    for (orig_idx, a) in alerts.into_iter().rev() {
+    let alerts_rev: Vec<_> = state.alerts.iter().enumerate().rev().collect();
+    let a_len = alerts_rev.len();
+    let f_len = state.fusion_clusters.len();
+    let total_items = a_len + f_len;
+    let scroll_off = if state.active_tile == 6 {
+        state.alert_scroll.min(total_items.saturating_sub(1))
+    } else {
+        0
+    };
+
+    for (pos_idx, (orig_idx, a)) in alerts_rev.into_iter().enumerate().skip(scroll_off) {
         if alert_lines.len() >= avail_rows {
             break;
         }
         let row_offset = alert_lines.len();
+        let is_active_row = state.active_tile == 6 && pos_idx == scroll_off;
         let c = match a.severity {
             argus_core::types::ThreatSeverity::Emergency
             | argus_core::types::ThreatSeverity::Critical => TELETEXT_RED,
             _ => TELETEXT_YELLOW,
         };
-        let time_prefix = format!("▸ {} ", a.timestamp.format("%H:%M"));
+        let time_prefix = if is_active_row {
+            format!("> {} ", a.timestamp.format("%H:%M"))
+        } else {
+            format!("▸ {} ", a.timestamp.format("%H:%M"))
+        };
         let prefix_w = time_prefix.chars().count();
         let msg_clipped: String = a
             .message
@@ -815,9 +861,21 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
             .chars()
             .take(max_w.saturating_sub(prefix_w))
             .collect();
+        let row_bg = if is_active_row { BG_HIGHLIGHT } else { BG_PANEL };
         alert_lines.push(Line::from(vec![
-            Span::styled(time_prefix, Style::default().fg(FG_MUTED)),
-            Span::styled(msg_clipped, Style::default().fg(c)),
+            Span::styled(
+                time_prefix,
+                Style::default()
+                    .fg(if is_active_row { TELETEXT_YELLOW } else { FG_MUTED })
+                    .bg(row_bg),
+            ),
+            Span::styled(
+                msg_clipped,
+                Style::default()
+                    .fg(c)
+                    .bg(row_bg)
+                    .add_modifier(if is_active_row { Modifier::BOLD } else { Modifier::empty() }),
+            ),
         ]));
         state.hit_tester.register(
             Rect {
@@ -830,12 +888,18 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
         );
     }
 
-    for (fc_idx, fc) in state.fusion_clusters.iter().enumerate() {
+    let fc_skip = scroll_off.saturating_sub(a_len);
+    for (fc_idx, fc) in state.fusion_clusters.iter().enumerate().skip(fc_skip) {
         if alert_lines.len() >= avail_rows {
             break;
         }
         let row_offset = alert_lines.len();
-        let prefix = format!("▸ [FUZ:{}] ", fc.score);
+        let is_active_row = state.active_tile == 6 && (a_len + fc_idx) == scroll_off;
+        let prefix = if is_active_row {
+            format!("> [FUZ:{}] ", fc.score)
+        } else {
+            format!("▸ [FUZ:{}] ", fc.score)
+        };
         let prefix_w = prefix.chars().count();
         let sum_clipped: String = fc
             .summary
@@ -843,12 +907,19 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
             .chars()
             .take(max_w.saturating_sub(prefix_w))
             .collect();
+        let row_bg = if is_active_row { BG_HIGHLIGHT } else { BG_PANEL };
         alert_lines.push(Line::from(vec![
             Span::styled(
                 prefix,
-                Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(TELETEXT_YELLOW)
+                    .bg(row_bg)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(sum_clipped, Style::default().fg(TELETEXT_CYAN)),
+            Span::styled(
+                sum_clipped,
+                Style::default().fg(TELETEXT_CYAN).bg(row_bg),
+            ),
         ]));
         state.hit_tester.register(
             Rect {
@@ -872,12 +943,17 @@ pub fn render_inspector_panel(frame: &mut Frame, area: Rect, state: &mut AppStat
         )));
     }
 
+    let alert_border = if state.active_tile == 6 {
+        BORDER_ACTIVE
+    } else {
+        BORDER_DIM
+    };
     let alert_p = Paragraph::new(alert_lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(BORDER_DIM))
+            .border_style(Style::default().fg(alert_border))
             .title(format!(
-                " [ [7] OTOMATIK ALARMLAR (Tikla: Odakla) | IZL ({}) ] ",
+                " [ [7] OTOMATIK ALARMLAR (7/Z:Buyut │ Tikla:Odak) │ IZL({}) ] ",
                 state.watchlist.len()
             ))
             .style(Style::default().bg(BG_PANEL)),
