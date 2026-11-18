@@ -593,4 +593,5 @@ pub struct FlashAlertBanner {
     pub lon: f64,
     pub target_id: Option<String>,
     pub acked: bool,
+    pub triggered_at: DateTime<Utc>,
 }

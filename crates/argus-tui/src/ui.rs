@@ -16,7 +16,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -60,6 +60,8 @@ pub fn render_main_ui(frame: &mut Frame, state: &mut AppState, photo_ctx: &mut P
     }
 
     render_footer_strip(frame, layout[2], state);
+
+    render_flash_toast(frame, screen, state);
 
     if state.is_dialog_open {
         render_dialog(frame, screen, state);
@@ -346,78 +348,7 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
         rows[1],
     );
 
-    // SATIR 2: Kompakt Baglamsal Kontrol Seridi (veya aktif Kritik Flas Alarm Seridi)
-    if let Some(flash) = state.active_flash_alert.as_ref().filter(|f| !f.acked) {
-        let prefix = " [! KRITIK IKAZ] ";
-        let sep = "  ";
-        let focus_lbl = "[ODAKLA]";
-        let ack_lbl = "[X:Kapat]";
-        let prefix_w = prefix.chars().count() as u16;
-        let sep_w = sep.chars().count() as u16;
-        let focus_w = focus_lbl.chars().count() as u16;
-        let ack_w = ack_lbl.chars().count() as u16;
-        let fixed_w = prefix_w + sep_w + focus_w + 1 + ack_w + 1;
-        let msg_budget = rows[2].width.saturating_sub(fixed_w) as usize;
-        let msg_str: String = if flash.message.chars().count() > msg_budget && msg_budget >= 3 {
-            let mut s: String = flash.message.chars().take(msg_budget - 2).collect();
-            s.push_str("..");
-            s
-        } else {
-            flash.message.chars().take(msg_budget).collect()
-        };
-        let msg_w = msg_str.chars().count() as u16;
-        let banner_style = Style::default()
-            .fg(TELETEXT_WHITE)
-            .bg(TELETEXT_RED)
-            .add_modifier(Modifier::BOLD);
-        let focus_style = Style::default()
-            .fg(TELETEXT_YELLOW)
-            .bg(TELETEXT_RED)
-            .add_modifier(Modifier::BOLD);
-
-        let focus_x = rows[2].x + prefix_w + msg_w + sep_w;
-        let ack_x = focus_x + focus_w + 1;
-        let used_w = prefix_w + msg_w + sep_w + focus_w + 1 + ack_w;
-        let pad_w = rows[2].width.saturating_sub(used_w) as usize;
-
-        let r2 = vec![
-            Span::styled(prefix, banner_style),
-            Span::styled(msg_str, banner_style),
-            Span::styled(sep, banner_style),
-            Span::styled(focus_lbl, focus_style),
-            Span::styled(" ", banner_style),
-            Span::styled(ack_lbl, banner_style),
-            Span::styled(" ".repeat(pad_w), banner_style),
-        ];
-        if focus_x + focus_w <= rows[2].x + rows[2].width {
-            state.hit_tester.register(
-                Rect {
-                    x: rows[2].x,
-                    y: rows[2].y,
-                    width: prefix_w + msg_w + sep_w + focus_w,
-                    height: 1,
-                },
-                HitTarget::FlashAlertFocus,
-            );
-        }
-        if ack_x + ack_w <= rows[2].x + rows[2].width {
-            state.hit_tester.register(
-                Rect {
-                    x: ack_x,
-                    y: rows[2].y,
-                    width: ack_w,
-                    height: 1,
-                },
-                HitTarget::FlashAlertAck,
-            );
-        }
-        frame.render_widget(
-            Paragraph::new(Line::from(r2)).style(Style::default().fg(TELETEXT_WHITE).bg(TELETEXT_RED)),
-            rows[2],
-        );
-        return;
-    }
-
+    // SATIR 2: Kompakt Baglamsal Kontrol Seridi
     let mut r2 = Vec::new();
     let mut cx = rows[2].x + 1;
     r2.push(Span::raw(" "));
@@ -709,4 +640,111 @@ fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_flash_toast(frame: &mut Frame, screen: Rect, state: &mut AppState) {
+    let Some((flash, rem_secs)) = state.active_flash_banner() else {
+        return;
+    };
+    if screen.width < 36 || screen.height < 8 {
+        return;
+    }
+
+    let toast_w = screen.width.saturating_sub(4).clamp(34, 66);
+    let toast_h = 3u16;
+    let tx = screen.x + screen.width.saturating_sub(toast_w + 2);
+    let ty = screen.y + screen.height.saturating_sub(toast_h + 2);
+    let toast_rect = Rect {
+        x: tx,
+        y: ty,
+        width: toast_w,
+        height: toast_h,
+    };
+
+    let focus_lbl = "[ODAKLA]";
+    let ack_lbl = format!("[{}s│X]", rem_secs);
+    let focus_w = focus_lbl.chars().count() as u16;
+    let ack_w = ack_lbl.chars().count() as u16;
+    let inner_w = toast_w.saturating_sub(2);
+    let msg_budget = inner_w.saturating_sub(focus_w + ack_w + 3) as usize;
+    let msg_str: String = if flash.message.chars().count() > msg_budget && msg_budget >= 3 {
+        let mut s: String = flash.message.chars().take(msg_budget - 2).collect();
+        s.push_str("..");
+        s
+    } else {
+        flash.message.chars().take(msg_budget).collect()
+    };
+    let msg_w = msg_str.chars().count() as u16;
+    let pad_w = inner_w.saturating_sub(1 + msg_w + 1 + focus_w + 1 + ack_w) as usize;
+
+    let toast_bg = Color::Rgb(42, 12, 16);
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" [! ACIL DURUM IKAZI - {}sn] ", rem_secs),
+            Style::default()
+                .fg(TELETEXT_WHITE)
+                .bg(TELETEXT_RED)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(
+            Style::default()
+                .fg(TELETEXT_RED)
+                .bg(toast_bg)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(toast_bg));
+
+    let inner = block.inner(toast_rect);
+    frame.render_widget(Clear, toast_rect);
+    frame.render_widget(block, toast_rect);
+
+    let line = Line::from(vec![
+        Span::styled(" ", Style::default().bg(toast_bg)),
+        Span::styled(
+            msg_str,
+            Style::default()
+                .fg(TELETEXT_WHITE)
+                .bg(toast_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ".repeat(pad_w + 1), Style::default().bg(toast_bg)),
+        Span::styled(
+            focus_lbl,
+            Style::default()
+                .fg(TELETEXT_BLACK)
+                .bg(TELETEXT_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", Style::default().bg(toast_bg)),
+        Span::styled(
+            ack_lbl,
+            Style::default()
+                .fg(TELETEXT_WHITE)
+                .bg(TELETEXT_RED)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line), inner);
+
+    let ack_x = inner.x + inner.width.saturating_sub(ack_w);
+    state.hit_tester.register(
+        Rect {
+            x: toast_rect.x,
+            y: toast_rect.y,
+            width: toast_rect.width.saturating_sub(ack_w + 1),
+            height: toast_rect.height,
+        },
+        HitTarget::FlashAlertFocus,
+    );
+    state.hit_tester.register(
+        Rect {
+            x: ack_x,
+            y: toast_rect.y,
+            width: ack_w + 1,
+            height: toast_rect.height,
+        },
+        HitTarget::FlashAlertAck,
+    );
 }

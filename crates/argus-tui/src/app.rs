@@ -1637,6 +1637,9 @@ impl App {
                         }
                         HitTarget::FlashAlertFocus => {
                             if let Some(f) = st.active_flash_alert.clone() {
+                                if let Some(cur) = &mut st.active_flash_alert {
+                                    cur.acked = true;
+                                }
                                 st.follow_target_id = None;
                                 st.map_center_lat = f.lat;
                                 st.map_center_lon = f.lon;

@@ -1,4 +1,4 @@
-use crate::geo::{cross_track_distance_km, haversine_km, initial_bearing_deg};
+use crate::geo::{haversine_km, initial_bearing_deg};
 use crate::state::AppState;
 use crate::types::{AarPair, AlertItem, FusionCluster, ReconWindow, TargetTrack, ThreatSeverity};
 use chrono::Utc;
@@ -355,87 +355,6 @@ pub fn recompute_fusion_and_anomalies(state: &mut AppState) {
 
     state.track_anomalies = anomalies;
 
-    // 2b) Denizalti Kablo Sabotaj Korelatoru (LOITERING/DARK-SHIP <= 15 km kablo + BGP-OUTAGE)
-    let mut direct_clusters: Vec<FusionCluster> = Vec::new();
-    let bgp_outage = state
-        .cyber_incidents
-        .iter()
-        .find(|c| c.event_type.to_uppercase().contains("BGP"))
-        .map(|c| c.title.clone());
-    if let Some(bgp_title) = bgp_outage {
-        if !state.subsea_cables.is_empty() {
-            let mut suspect_vessels: Vec<(f64, f64, String, &str)> = Vec::new();
-            for s in state.sea_targets.iter() {
-                if let Some(anom) = state.track_anomalies.get(&s.id) {
-                    if anom.contains("LOITERING") || anom.contains("STS-TRANSFER") {
-                        let vtag = if anom.contains("STS-TRANSFER") {
-                            "STS-TRANSFER"
-                        } else {
-                            "LOITERING"
-                        };
-                        suspect_vessels.push((s.geo.lat, s.geo.lon, s.callsign.clone(), vtag));
-                    }
-                }
-            }
-            for d in &state.dark_ships {
-                suspect_vessels.push((d.last_lat, d.last_lon, d.callsign.clone(), "DARK-SHIP"));
-            }
-
-            for (vlat, vlon, vcs, vtag) in suspect_vessels {
-                let mut closest_cable: Option<(&str, f64)> = None;
-                for cable in &state.subsea_cables {
-                    for seg in &cable.lines {
-                        for pair in seg.windows(2) {
-                            let (a_lon, a_lat) = pair[0];
-                            let (b_lon, b_lat) = pair[1];
-                            let min_lat = a_lat.min(b_lat) - 0.25;
-                            let max_lat = a_lat.max(b_lat) + 0.25;
-                            let min_lon = a_lon.min(b_lon) - 0.50;
-                            let max_lon = a_lon.max(b_lon) + 0.50;
-                            if vlat < min_lat || vlat > max_lat || vlon < min_lon || vlon > max_lon {
-                                continue;
-                            }
-                            let d_km =
-                                cross_track_distance_km(vlat, vlon, a_lat, a_lon, b_lat, b_lon);
-                            if d_km <= 15.0
-                                && closest_cable.is_none_or(|(_, prev_d)| d_km < prev_d)
-                            {
-                                closest_cable = Some((cable.name.as_str(), d_km));
-                            }
-                        }
-                    }
-                }
-                if let Some((cable_name, dist_km)) = closest_cable {
-                    let summary = format!(
-                        "[KABLO-SABOTAJ] {} ({}) -> {} ({:.1}km) + {}",
-                        vcs, vtag, cable_name, dist_km, bgp_title
-                    );
-                    direct_clusters.push(FusionCluster {
-                        lat: vlat,
-                        lon: vlon,
-                        score: 115,
-                        domains: vec![
-                            "DENIZ".to_string(),
-                            "KABLO".to_string(),
-                            "SIBER-BGP".to_string(),
-                        ],
-                        summary: summary.clone(),
-                    });
-                    pending_alerts.push((
-                        AlertItem {
-                            timestamp: Utc::now(),
-                            domain: "KABLO-SABOTAJ".to_string(),
-                            severity: ThreatSeverity::Critical,
-                            message: summary,
-                            target_id: Some(format!("FUZ:{:.1}:{:.1}", vlat, vlon)),
-                        },
-                        Some((vlat, vlon)),
-                    ));
-                }
-            }
-        }
-    }
-
     // 3) MASINT Patlama Ayirt Edici (Sig deprem <= 3.5 km + FIRMS >=340K <=25km veya ACLED <=45km)
     for q in state.earthquakes.iter() {
         if q.depth_km > 0.0 && q.depth_km <= 3.5 {
@@ -506,7 +425,7 @@ pub fn recompute_fusion_and_anomalies(state: &mut AppState) {
     }
 
     let mut visited = vec![false; signals.len()];
-    let mut clusters = direct_clusters;
+    let mut clusters: Vec<FusionCluster> = Vec::new();
 
     for i in 0..signals.len() {
         if visited[i] {
@@ -840,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sts_and_subsea_cable_sabotage_correlation() {
+    fn test_sts_transfer_correlation() {
         let mut st = AppState::new(crate::config::AppConfig::default());
         st.dvr.last_recorded_at = Some(Utc::now());
 
@@ -868,29 +787,11 @@ mod tests {
         t2.callsign = "SHADOW OIL 2".to_string();
         t2.geo = crate::types::GeoPoint::new(36.002, 28.002, Some(0.0)); // ~0.28 km
 
-        // Give t1 a 4-point trail so LOITERING also registers
         for k in 0..4 {
             t1.geo.lat = 36.0 + (k as f64) * 0.001;
             st.upsert_target(t1.clone());
         }
         st.upsert_target(t2);
-
-        st.subsea_cables.push(crate::types::SubseaCable {
-            id: "c1".to_string(),
-            name: "Med Nautilus".to_string(),
-            color_hex: "#38bdf8".to_string(),
-            lines: vec![vec![(27.5, 36.05), (28.5, 36.05)]],
-        });
-        st.upsert_cyber_incident(crate::types::CyberIncident {
-            id: "IODA-1".to_string(),
-            event_type: "BGP-OUTAGE".to_string(),
-            title: "EastMed ISP Drop".to_string(),
-            target: "AS123".to_string(),
-            severity: ThreatSeverity::Critical,
-            cve: None,
-            asn: Some("AS123".to_string()),
-            timestamp: Utc::now(),
-        });
 
         recompute_fusion_and_anomalies(&mut st);
         assert!(
@@ -898,12 +799,7 @@ mod tests {
                 .get("TANK1")
                 .is_some_and(|v| v.contains("STS-TRANSFER"))
         );
-        assert!(st.alerts.iter().any(|a| a.message.contains("[KABLO-SABOTAJ]")));
-        assert!(st.active_flash_alert.as_ref().is_some_and(|f| !f.acked));
-        assert!(st
-            .fusion_clusters
-            .iter()
-            .any(|fc| fc.summary.contains("[KABLO-SABOTAJ]")));
+        assert!(st.alerts.iter().any(|a| a.message.contains("[STS-TRANSFER]")));
     }
 
     #[test]

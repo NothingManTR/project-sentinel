@@ -178,6 +178,7 @@ pub struct AppState {
     pub escalation_metrics: Vec<EscalationMetric>,
     pub recon_windows: Vec<ReconWindow>,
     pub active_flash_alert: Option<FlashAlertBanner>,
+    pub seen_flash_keys: HashSet<String>,
     pub dvr: crate::dvr::DvrTimeline,
     pub ai_analysis_running: bool,
     pub ai_last_report: Option<(chrono::DateTime<chrono::Utc>, String)>,
@@ -434,6 +435,7 @@ impl AppState {
             escalation_metrics: Vec::new(),
             recon_windows: Vec::new(),
             active_flash_alert: None,
+            seen_flash_keys: HashSet::new(),
             dvr: crate::dvr::DvrTimeline::default(),
             ai_analysis_running: false,
             ai_last_report: None,
@@ -830,13 +832,11 @@ impl AppState {
 
     pub fn push_priority_alert(&mut self, item: AlertItem, lat_lon: Option<(f64, f64)>) {
         if item.severity >= ThreatSeverity::Critical {
-            let already_acked_same = self.active_flash_alert.as_ref().is_some_and(|cur| {
-                cur.acked
-                    && cur.target_id.is_some()
-                    && cur.target_id == item.target_id
-                    && cur.message == item.message
-            });
-            if !already_acked_same {
+            let flash_key = item
+                .target_id
+                .clone()
+                .unwrap_or_else(|| item.message.clone());
+            if self.seen_flash_keys.insert(flash_key) {
                 let (lat, lon) = lat_lon.unwrap_or_else(|| {
                     if let Some(tid) = item.target_id.as_deref() {
                         let raw_id = tid.strip_prefix("ANOM:").unwrap_or(tid);
@@ -853,6 +853,7 @@ impl AppState {
                     lon,
                     target_id: item.target_id.clone(),
                     acked: false,
+                    triggered_at: chrono::Utc::now(),
                 });
             }
         }
@@ -867,6 +868,23 @@ impl AppState {
                 )
             },
         );
+    }
+
+    pub fn active_flash_banner(&mut self) -> Option<(FlashAlertBanner, i64)> {
+        let now = chrono::Utc::now();
+        if let Some(f) = &mut self.active_flash_alert {
+            if f.acked {
+                return None;
+            }
+            let elapsed_secs = (now - f.triggered_at).num_seconds();
+            if elapsed_secs >= 5 {
+                f.acked = true;
+                return None;
+            }
+            let rem_secs = (5 - elapsed_secs).clamp(1, 5);
+            return Some((f.clone(), rem_secs));
+        }
+        None
     }
 
     pub fn upsert_targets_batch(&mut self, tracks: Vec<TargetTrack>) {
@@ -2151,6 +2169,27 @@ mod tests {
         assert_eq!(flash.severity, ThreatSeverity::Critical);
         assert!(!flash.acked);
         assert_eq!(flash.lat, 36.5);
+        assert!(state.active_flash_banner().is_some());
+
+        // Simulate 5 seconds elapsed -> should auto-dismiss
+        if let Some(f) = &mut state.active_flash_alert {
+            f.triggered_at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        }
+        assert!(state.active_flash_banner().is_none());
+        assert!(state.active_flash_alert.as_ref().is_some_and(|f| f.acked));
+
+        // Re-pushing the same target_id should NOT re-open the flash banner
+        state.push_priority_alert(
+            AlertItem {
+                timestamp: chrono::Utc::now(),
+                domain: "TEST".to_string(),
+                severity: ThreatSeverity::Critical,
+                message: "KRITIK ALARM".to_string(),
+                target_id: Some("CRIT:1".to_string()),
+            },
+            Some((36.5, 29.1)),
+        );
+        assert!(state.active_flash_banner().is_none());
     }
 
     #[test]
