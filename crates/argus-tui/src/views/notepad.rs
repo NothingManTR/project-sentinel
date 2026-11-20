@@ -112,20 +112,31 @@ pub fn render_notepad_view(frame: &mut Frame, area: Rect, state: &mut AppState) 
     frame.render_widget(sb_block, panes[0]);
 
     let max_rows = sb_inner.height as usize;
-    let total_files = state.notepad.files.len();
-    let sel_idx = state.notepad.selected_file_idx.min(total_files.saturating_sub(1));
-    let start_idx = if sel_idx >= max_rows {
-        sel_idx - max_rows + 1
+    let q_lower = state.search_query.trim().to_lowercase();
+    let matched_files: Vec<usize> = state
+        .notepad
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| q_lower.is_empty() || f.to_lowercase().contains(&q_lower))
+        .map(|(i, _)| i)
+        .collect();
+    let sel_pos = matched_files
+        .iter()
+        .position(|&fi| fi == state.notepad.selected_file_idx)
+        .unwrap_or(0);
+    let start_idx = if sel_pos >= max_rows {
+        sel_pos - max_rows + 1
     } else {
         0
     };
 
     let mut file_lines = Vec::new();
-    for (vis_row, fidx) in (start_idx..total_files).take(max_rows).enumerate() {
+    for (vis_row, &fidx) in matched_files.iter().skip(start_idx).take(max_rows).enumerate() {
         let fname = &state.notepad.files[fidx];
         let short_name = fname.strip_prefix("reports/").unwrap_or(fname);
         let is_active = fname == &state.notepad.active_file;
-        let is_selected = fidx == sel_idx;
+        let is_selected = fidx == state.notepad.selected_file_idx;
         let tag = if fname == "notes.txt" {
             "[NOT]"
         } else if fname.contains("ai_sitrep") {
@@ -182,7 +193,12 @@ pub fn render_notepad_view(frame: &mut Frame, area: Rect, state: &mut AppState) 
         .lines()
         .map(|l| {
             let trim = l.trim_start();
-            let style = if trim.starts_with('#') || l.starts_with("---") {
+            let style = if !q_lower.is_empty() && l.to_lowercase().contains(&q_lower) {
+                Style::default()
+                    .fg(TELETEXT_BLACK)
+                    .bg(TELETEXT_YELLOW)
+                    .add_modifier(Modifier::BOLD)
+            } else if trim.starts_with('#') || l.starts_with("---") {
                 Style::default().fg(TELETEXT_CYAN).add_modifier(Modifier::BOLD)
             } else if trim.contains("[NOKTA") || l.contains("Risk Skoru:") {
                 Style::default().fg(TELETEXT_YELLOW).add_modifier(Modifier::BOLD)

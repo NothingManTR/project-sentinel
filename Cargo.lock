@@ -120,6 +120,7 @@ dependencies = [
  "parking_lot",
  "ratatui",
  "serde",
+ "serde_json",
  "toml",
 ]
 

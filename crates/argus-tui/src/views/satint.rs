@@ -100,7 +100,19 @@ pub fn render_satint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let header = Row::new(header_cells).height(1).style(Style::default().bg(BG_SURFACE));
 
     let mut rows = Vec::new();
-    let total_sats = state.satellites.len();
+    let q_lower = state.search_query.trim().to_lowercase();
+    let matched_sats: Vec<usize> = state
+        .satellites
+        .iter()
+        .enumerate()
+        .filter(|(_, sat)| {
+            q_lower.is_empty()
+                || sat.name.to_lowercase().contains(&q_lower)
+                || sat.norad_id.to_string().contains(&q_lower)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let total_sats = matched_sats.len();
     let visible_rows = right_chunks[0].height.saturating_sub(3) as usize;
     let max_scroll = total_sats.saturating_sub(1);
     if state.sat_scroll > max_scroll {
@@ -108,14 +120,10 @@ pub fn render_satint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
     }
     let start_idx = state.sat_scroll;
 
-    for (row_offset, (idx, sat)) in state
-        .satellites
-        .iter()
-        .enumerate()
-        .skip(start_idx)
-        .take(visible_rows)
-        .enumerate()
-    {
+    for (row_offset, &idx) in matched_sats.iter().skip(start_idx).take(visible_rows).enumerate() {
+        let Some(sat) = state.satellites.get(idx) else {
+            continue;
+        };
         let is_sel = (state.selected_domain == 3 && state.selected_row == idx)
             || (state.selected_domain != 3 && start_idx == idx);
         let is_visible = sat.el_deg > 0.0;

@@ -2,9 +2,10 @@ use crate::config::AppConfig;
 use crate::geo::haversine_km;
 use crate::mouse::HitTester;
 use crate::types::*;
-use std::collections::{HashMap, HashSet, VecDeque};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Bounded RingBuffer (Sabit bellek tavanlı dairesel tampon)
 #[derive(Debug, Clone)]
@@ -130,10 +131,8 @@ pub struct AppState {
     // Pencere & Mozaik Yönetimi (Dashboard içindeki paneller)
     pub active_tile: usize,            // 0: P100 Harita, 1: P200 Haber, 2: P300 Hava/Deniz, 3: P400 Uydu, 4: P500 Siber, 5: P600 Denetci, 6: P700 Alarmlar
     pub zoomed_tile: Option<usize>,    // None: Mozaik (Split-Tile), Some(i): Tam Ekran Zoom
-    pub minimized_tiles: [bool; 7],
-    pub is_start_menu_open: bool,
     
-    // Win98 Diyalog Kutusu (Dossier Popup)
+    // Diyalog Kutusu (Dossier / AI / Saglik Matrisi Popup)
     pub is_dialog_open: bool,
     pub dialog_title: String,
     pub dialog_content: Vec<String>,
@@ -180,11 +179,20 @@ pub struct AppState {
     pub active_flash_alert: Option<FlashAlertBanner>,
     pub seen_flash_keys: HashSet<String>,
     pub dvr: crate::dvr::DvrTimeline,
+    pub feed_health: BTreeMap<String, FeedHealth>,
+    pub pending_notifications: VecDeque<PendingNotification>,
+    pub notification_cooldowns: HashMap<String, chrono::DateTime<chrono::Utc>>,
+    pub command_palette: CommandPaletteState,
+    pub geoint_goto_active: bool,
+    pub geoint_goto_input: String,
     pub ai_analysis_running: bool,
     pub ai_last_report: Option<(chrono::DateTime<chrono::Utc>, String)>,
-    pub ai_mode: usize, // 0: Kuresel Flashpoint, 1: Secili Hedef, 2: Bolgesel Kriz, 3: Ozel Soru
+    pub ai_mode: usize, // 0: Kuresel Flashpoint, 1: Secili Hedef, 2: Bolgesel Kriz, 3: Ozel Soru, 4: OPFOR, 5: Delta
     pub ai_custom_prompt: String,
     pub ai_prompt_input_active: bool,
+    pub ai_conversation: Vec<(String, String)>,
+    pub ai_followup_input_active: bool,
+    pub ai_followup_input: String,
     
     // Canlı Veri Akışları (Ring Buffers)
     pub targets: RingBuffer<TargetTrack>,
@@ -267,12 +275,6 @@ pub struct AppState {
     pub sea_sort_col: usize,           // 0: Varsayılan, 1: Gemi Adı, 2: Sınıf, 3: Hız
     pub sea_sort_asc: bool,
     
-    // Win98 BIOS / POST Açılış Ekranı
-    pub is_splash_active: bool,
-    pub splash_progress: u8,
-    pub splash_ticks: u32,
-    pub splash_started_at: std::time::Instant,
-
     // Durum ve Kontroller
     pub audio_muted: bool,
     pub search_query: String,
@@ -309,8 +311,6 @@ impl AppState {
             previous_view: ActiveView::Dashboard,
             active_tile: 0,
             zoomed_tile: None,
-            minimized_tiles: [false; 7],
-            is_start_menu_open: false,
             is_dialog_open: false,
             dialog_title: String::new(),
             dialog_content: Vec::new(),
@@ -438,11 +438,20 @@ impl AppState {
             active_flash_alert: None,
             seen_flash_keys: HashSet::new(),
             dvr: crate::dvr::DvrTimeline::default(),
+            feed_health: BTreeMap::new(),
+            pending_notifications: VecDeque::new(),
+            notification_cooldowns: HashMap::new(),
+            command_palette: CommandPaletteState::default(),
+            geoint_goto_active: false,
+            geoint_goto_input: String::new(),
             ai_analysis_running: false,
             ai_last_report: None,
             ai_mode: 0,
             ai_custom_prompt: String::new(),
             ai_prompt_input_active: false,
+            ai_conversation: Vec::new(),
+            ai_followup_input_active: false,
+            ai_followup_input: String::new(),
             targets: RingBuffer::new(30000),
             air_targets: RingBuffer::new(22000),
             sea_targets: RingBuffer::new(10000),
@@ -573,10 +582,6 @@ impl AppState {
             air_sort_asc: false,
             sea_sort_col: 0,
             sea_sort_asc: false,
-            is_splash_active: false,
-            splash_progress: 100,
-            splash_ticks: 0,
-            splash_started_at: std::time::Instant::now(),
             audio_muted,
             search_query: String::new(),
             is_search_active: false,
@@ -605,26 +610,76 @@ impl AppState {
         }
     }
 
-    pub fn advance_splash(&mut self) {
-        if self.is_splash_active {
-            self.splash_ticks += 1;
-            let elapsed_ms = self.splash_started_at.elapsed().as_millis();
-            let time_prog = ((elapsed_ms * 100) / 2500).min(100) as u8;
-            // 25 ticks @ 100ms = 2.5 sn sonra otomatik Dashboard'a geç
-            let tick_prog = (self.splash_ticks * 4).min(100) as u8;
-            self.splash_progress = time_prog.max(tick_prog);
-            if self.splash_progress >= 100 {
-                self.dismiss_splash();
-            }
-        }
+    pub fn record_feed_ok(&mut self, name: &str, latency_ms: u64, record_count: usize) {
+        let status = if latency_ms > 5000 {
+            FeedStatus::Degraded
+        } else {
+            FeedStatus::Ok
+        };
+        self.feed_health.insert(
+            name.to_string(),
+            FeedHealth {
+                name: name.to_string(),
+                status,
+                last_ok: Some(chrono::Utc::now()),
+                last_error: None,
+                latency_ms,
+                record_count,
+                fail_streak: 0,
+            },
+        );
     }
 
-    pub fn dismiss_splash(&mut self) {
-        self.is_splash_active = false;
-        self.splash_progress = 100;
-        if self.active_view == ActiveView::Splash {
-            self.active_view = ActiveView::Dashboard;
-        }
+    pub fn record_feed_err(&mut self, name: &str, err: impl Into<String>, latency_ms: u64) {
+        let err_str: String = err.into().chars().take(120).collect();
+        let entry = self
+            .feed_health
+            .entry(name.to_string())
+            .or_insert_with(|| FeedHealth {
+                name: name.to_string(),
+                status: FeedStatus::Error,
+                last_ok: None,
+                last_error: None,
+                latency_ms,
+                record_count: 0,
+                fail_streak: 0,
+            });
+        entry.fail_streak = entry.fail_streak.saturating_add(1);
+        entry.latency_ms = latency_ms;
+        entry.last_error = Some(err_str);
+        entry.status = if entry.fail_streak >= 2 || entry.last_ok.is_none() {
+            FeedStatus::Error
+        } else {
+            FeedStatus::Degraded
+        };
+    }
+
+    pub fn record_feed_nokey(&mut self, name: &str, reason: &str) {
+        self.feed_health.insert(
+            name.to_string(),
+            FeedHealth {
+                name: name.to_string(),
+                status: FeedStatus::NoKey,
+                last_ok: None,
+                last_error: Some(reason.to_string()),
+                latency_ms: 0,
+                record_count: 0,
+                fail_streak: 0,
+            },
+        );
+    }
+
+    pub fn feed_health_counts(&self) -> (usize, usize) {
+        let active: Vec<&FeedHealth> = self
+            .feed_health
+            .values()
+            .filter(|f| f.status != FeedStatus::NoKey)
+            .collect();
+        let ok = active
+            .iter()
+            .filter(|f| matches!(f.status, FeedStatus::Ok | FeedStatus::Degraded))
+            .count();
+        (ok, active.len())
     }
 
     pub fn is_centcom_track(t: &TargetTrack) -> bool {
@@ -654,15 +709,15 @@ impl AppState {
         let targets = &self.air_targets;
         match self.air_sort_col {
             1 => indices.sort_by(|&ia, &ib| {
-                let a = targets.get(ia).unwrap();
-                let b = targets.get(ib).unwrap();
-                let cmp = a.callsign.cmp(&b.callsign);
+                let a = targets.get(ia).map(|t| t.callsign.as_str()).unwrap_or("");
+                let b = targets.get(ib).map(|t| t.callsign.as_str()).unwrap_or("");
+                let cmp = a.cmp(b);
                 if self.air_sort_asc { cmp } else { cmp.reverse() }
             }),
             2 => indices.sort_by(|&ia, &ib| {
-                let a = targets.get(ia).unwrap();
-                let b = targets.get(ib).unwrap();
-                let cmp = a.is_military.cmp(&b.is_military);
+                let a = targets.get(ia).is_some_and(|t| t.is_military);
+                let b = targets.get(ib).is_some_and(|t| t.is_military);
+                let cmp = a.cmp(&b);
                 if self.air_sort_asc { cmp } else { cmp.reverse() }
             }),
             3 => indices.sort_by(|&ia, &ib| {
@@ -681,21 +736,29 @@ impl AppState {
                 let st_lat = self.station_lat;
                 let st_lon = self.station_lon;
                 indices.sort_by(|&ia, &ib| {
-                    let a = targets.get(ia).unwrap();
-                    let b = targets.get(ib).unwrap();
-                    let da = haversine_km(st_lat, st_lon, a.geo.lat, a.geo.lon);
-                    let db = haversine_km(st_lat, st_lon, b.geo.lat, b.geo.lon);
+                    let da = targets
+                        .get(ia)
+                        .map(|a| haversine_km(st_lat, st_lon, a.geo.lat, a.geo.lon))
+                        .unwrap_or(f64::MAX);
+                    let db = targets
+                        .get(ib)
+                        .map(|b| haversine_km(st_lat, st_lon, b.geo.lat, b.geo.lon))
+                        .unwrap_or(f64::MAX);
                     let cmp = da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal);
                     if self.air_sort_asc { cmp } else { cmp.reverse() }
                 });
             }
             _ => {
                 indices.sort_by(|&ia, &ib| {
-                    let a = targets.get(ia).unwrap();
-                    let b = targets.get(ib).unwrap();
-                    b.is_military
-                        .cmp(&a.is_military)
-                        .then_with(|| Self::is_centcom_track(b).cmp(&Self::is_centcom_track(a)))
+                    let (a_mil, a_cent) = targets
+                        .get(ia)
+                        .map(|a| (a.is_military, Self::is_centcom_track(a)))
+                        .unwrap_or((false, false));
+                    let (b_mil, b_cent) = targets
+                        .get(ib)
+                        .map(|b| (b.is_military, Self::is_centcom_track(b)))
+                        .unwrap_or((false, false));
+                    b_mil.cmp(&a_mil).then_with(|| b_cent.cmp(&a_cent))
                 });
             }
         }
@@ -838,7 +901,7 @@ impl AppState {
                 .target_id
                 .clone()
                 .unwrap_or_else(|| item.message.clone());
-            if self.seen_flash_keys.insert(flash_key) {
+            if self.seen_flash_keys.insert(flash_key.clone()) {
                 let (lat, lon) = lat_lon.unwrap_or_else(|| {
                     if let Some(tid) = item.target_id.as_deref() {
                         let raw_id = tid.strip_prefix("ANOM:").unwrap_or(tid);
@@ -848,6 +911,7 @@ impl AppState {
                     }
                     (self.station_lat, self.station_lon)
                 });
+                let now = chrono::Utc::now();
                 self.active_flash_alert = Some(FlashAlertBanner {
                     message: item.message.clone(),
                     severity: item.severity,
@@ -855,8 +919,14 @@ impl AppState {
                     lon,
                     target_id: item.target_id.clone(),
                     acked: false,
-                    triggered_at: chrono::Utc::now(),
+                    triggered_at: now,
                 });
+                self.enqueue_notification_if_allowed(
+                    &flash_key,
+                    format!("SENTINEL [{}]", item.domain),
+                    item.message.clone(),
+                    item.severity,
+                );
             }
         }
         let tid_opt = item.target_id.clone();
@@ -870,6 +940,34 @@ impl AppState {
                 )
             },
         );
+    }
+
+    pub fn enqueue_notification_if_allowed(
+        &mut self,
+        key: &str,
+        title: String,
+        body: String,
+        severity: ThreatSeverity,
+    ) {
+        if !self.config.notifications.desktop_enabled && self.config.notifications.webhook_url.is_none() {
+            return;
+        }
+        let now = chrono::Utc::now();
+        let cooldown = self.config.notifications.cooldown_secs as i64;
+        if let Some(last) = self.notification_cooldowns.get(key) {
+            if (now - *last).num_seconds() < cooldown {
+                return;
+            }
+        }
+        self.notification_cooldowns.insert(key.to_string(), now);
+        if self.pending_notifications.len() >= 16 {
+            self.pending_notifications.pop_front();
+        }
+        self.pending_notifications.push_back(PendingNotification {
+            title,
+            body,
+            severity,
+        });
     }
 
     pub fn active_flash_banner(&mut self) -> Option<(FlashAlertBanner, i64)> {
@@ -1267,15 +1365,15 @@ impl AppState {
         let targets = &self.sea_targets;
         match self.sea_sort_col {
             1 => indices.sort_by(|&ia, &ib| {
-                let a = targets.get(ia).unwrap();
-                let b = targets.get(ib).unwrap();
-                let cmp = a.callsign.cmp(&b.callsign);
+                let a = targets.get(ia).map(|t| t.callsign.as_str()).unwrap_or("");
+                let b = targets.get(ib).map(|t| t.callsign.as_str()).unwrap_or("");
+                let cmp = a.cmp(b);
                 if self.sea_sort_asc { cmp } else { cmp.reverse() }
             }),
             2 => indices.sort_by(|&ia, &ib| {
-                let a = targets.get(ia).unwrap();
-                let b = targets.get(ib).unwrap();
-                let cmp = a.is_military.cmp(&b.is_military);
+                let a = targets.get(ia).is_some_and(|t| t.is_military);
+                let b = targets.get(ib).is_some_and(|t| t.is_military);
+                let cmp = a.cmp(&b);
                 if self.sea_sort_asc { cmp } else { cmp.reverse() }
             }),
             3 => indices.sort_by(|&ia, &ib| {
@@ -1288,10 +1386,14 @@ impl AppState {
                 let st_lat = self.station_lat;
                 let st_lon = self.station_lon;
                 indices.sort_by(|&ia, &ib| {
-                    let a = targets.get(ia).unwrap();
-                    let b = targets.get(ib).unwrap();
-                    let da = haversine_km(st_lat, st_lon, a.geo.lat, a.geo.lon);
-                    let db = haversine_km(st_lat, st_lon, b.geo.lat, b.geo.lon);
+                    let da = targets
+                        .get(ia)
+                        .map(|a| haversine_km(st_lat, st_lon, a.geo.lat, a.geo.lon))
+                        .unwrap_or(f64::MAX);
+                    let db = targets
+                        .get(ib)
+                        .map(|b| haversine_km(st_lat, st_lon, b.geo.lat, b.geo.lon))
+                        .unwrap_or(f64::MAX);
                     let cmp = da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal);
                     if self.sea_sort_asc { cmp } else { cmp.reverse() }
                 });
@@ -1385,13 +1487,91 @@ impl AppState {
         }
     }
 
-    pub fn toggle_minimize(&mut self, tile_idx: usize) {
-        if tile_idx < 7 {
-            self.minimized_tiles[tile_idx] = !self.minimized_tiles[tile_idx];
-            if self.zoomed_tile == Some(tile_idx) && self.minimized_tiles[tile_idx] {
-                self.zoomed_tile = None;
+    pub fn default_session_path() -> PathBuf {
+        if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home)
+                .join(".config")
+                .join("argus-osint")
+                .join("session.json")
+        } else {
+            PathBuf::from("session.json")
+        }
+    }
+
+    pub fn save_session(&self) -> anyhow::Result<PathBuf> {
+        let path = Self::default_session_path();
+        self.save_session_to(&path)?;
+        Ok(path)
+    }
+
+    pub fn save_session_to(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
             }
         }
+        let mut strait_counters: HashMap<String, (u32, u32, u32, u32)> = HashMap::new();
+        for g in &self.strait_gates {
+            strait_counters.insert(
+                g.id.clone(),
+                (g.fwd_count, g.rev_count, g.mil_count, g.tanker_count),
+            );
+        }
+        let snap = SessionSnapshot {
+            watchlist: self.watchlist.iter().cloned().collect(),
+            strait_counters,
+            map_center_lat: self.map_center_lat,
+            map_center_lon: self.map_center_lon,
+            map_zoom: self.map_zoom,
+            map_style: self.map_style,
+            map_high_contrast: self.map_high_contrast,
+            map_aircraft_shapes: self.map_aircraft_shapes,
+            geoint_layers: self.geoint_layers,
+            audio_muted: self.audio_muted,
+        };
+        let payload = serde_json::to_string_pretty(&snap)?;
+        let tmp_path = path.with_extension("json.tmp");
+        fs::write(&tmp_path, payload)?;
+        fs::rename(&tmp_path, path)?;
+        Ok(())
+    }
+
+    pub fn load_session(&mut self) -> bool {
+        let path = Self::default_session_path();
+        self.load_session_from(&path)
+    }
+
+    pub fn load_session_from(&mut self, path: &Path) -> bool {
+        let Ok(raw) = fs::read_to_string(path) else {
+            return false;
+        };
+        let Ok(snap) = serde_json::from_str::<SessionSnapshot>(&raw) else {
+            return false;
+        };
+        self.watchlist = snap.watchlist.into_iter().collect();
+        for g in &mut self.strait_gates {
+            if let Some(&(fwd, rev, mil, tnk)) = snap.strait_counters.get(&g.id) {
+                g.fwd_count = fwd;
+                g.rev_count = rev;
+                g.mil_count = mil;
+                g.tanker_count = tnk;
+            }
+        }
+        if snap.map_center_lat.is_finite() && snap.map_center_lat.abs() <= 85.0 {
+            self.map_center_lat = snap.map_center_lat;
+        }
+        if snap.map_center_lon.is_finite() && snap.map_center_lon.abs() <= 180.0 {
+            self.map_center_lon = snap.map_center_lon;
+        }
+        if snap.map_zoom.is_finite() {
+            self.map_zoom = snap.map_zoom.clamp(0.25, 50.0);
+        }
+        self.map_style = snap.map_style;
+        self.map_high_contrast = snap.map_high_contrast;
+        self.map_aircraft_shapes = snap.map_aircraft_shapes;
+        self.geoint_layers = snap.geoint_layers;
+        self.audio_muted = snap.audio_muted;
+        true
     }
 
     pub fn open_dialog(&mut self, title: impl Into<String>, lines: Vec<String>) {
@@ -1964,6 +2144,22 @@ fn html_escape(s: &str) -> String {
     out
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSnapshot {
+    #[serde(default)]
+    pub watchlist: Vec<String>,
+    #[serde(default)]
+    pub strait_counters: HashMap<String, (u32, u32, u32, u32)>,
+    pub map_center_lat: f64,
+    pub map_center_lon: f64,
+    pub map_zoom: f64,
+    pub map_style: MapRenderStyle,
+    pub map_high_contrast: bool,
+    pub map_aircraft_shapes: bool,
+    pub geoint_layers: u16,
+    pub audio_muted: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2253,5 +2449,46 @@ mod tests {
         assert_eq!(state.dark_ships[0].id, "271999");
         assert!(state.dark_ships[0].dr_lon > 28.9);
         assert!(state.alerts.iter().any(|a| a.domain == "DARK-SHIP"));
+    }
+
+    #[test]
+    fn test_session_persistence_roundtrip_and_feed_health_and_notifications() {
+        let tmp_dir = std::env::temp_dir().join("argus_osint_test_session");
+        let _ = fs::remove_dir_all(&tmp_dir);
+        let session_path = tmp_dir.join("session.json");
+
+        let mut st = AppState::new(AppConfig::default());
+        st.watchlist.insert("FORTE11".to_string());
+        st.strait_gates[0].fwd_count = 7;
+        st.strait_gates[0].mil_count = 2;
+        st.map_center_lat = 37.5;
+        st.map_center_lon = 34.2;
+        st.map_zoom = 3.5;
+        st.map_aircraft_shapes = true;
+        st.geoint_layers = 0b0000_1111_0000_1111;
+        st.save_session_to(&session_path).expect("save session");
+
+        let mut st2 = AppState::new(AppConfig::default());
+        assert!(st2.load_session_from(&session_path));
+        assert!(st2.watchlist.contains("FORTE11"));
+        assert_eq!(st2.strait_gates[0].fwd_count, 7);
+        assert_eq!(st2.strait_gates[0].mil_count, 2);
+        assert!((st2.map_center_lat - 37.5).abs() < 1e-6);
+        assert!(st2.map_aircraft_shapes);
+        assert_eq!(st2.geoint_layers, 0b0000_1111_0000_1111);
+
+        // Feed health tracking
+        st2.record_feed_ok("OpenSky ADS-B", 420, 1200);
+        st2.record_feed_err("FIRMS", "HTTP 429", 900);
+        st2.record_feed_nokey("OpenWeather", "API anahtari tanimli degil");
+        assert_eq!(st2.feed_health_counts(), (1, 2));
+        assert_eq!(st2.feed_health["FIRMS"].status, FeedStatus::Error);
+
+        // Notification enqueue + cooldown deduplication
+        st2.enqueue_notification_if_allowed("KEY1", "T".into(), "B".into(), ThreatSeverity::Critical);
+        st2.enqueue_notification_if_allowed("KEY1", "T".into(), "B".into(), ThreatSeverity::Critical);
+        assert_eq!(st2.pending_notifications.len(), 1);
+
+        let _ = fs::remove_dir_all(&tmp_dir);
     }
 }

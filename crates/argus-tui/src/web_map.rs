@@ -552,39 +552,71 @@ pub fn start_web_map_server(state: Arc<RwLock<AppState>>) {
 
 fn build_state_json(state: &Arc<RwLock<AppState>>) -> String {
     let st = state.read();
-    let air: Vec<serde_json::Value> = st
-        .air_targets
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "id": t.id,
-                "cs": t.callsign,
-                "lat": t.geo.lat,
-                "lon": t.geo.lon,
-                "mil": t.is_military,
-                "cls": t.airframe_or_vessel_class.as_deref().unwrap_or(""),
-                "hdg": t.heading_deg.unwrap_or(0.0),
-                "aor": t.origin.as_deref().unwrap_or("KURESEL"),
-                "rt": t.destination.as_deref().unwrap_or(""),
-                "info": t.info,
+    let dvr_snap = st.dvr.active_snapshot();
+    let (air, sea): (Vec<serde_json::Value>, Vec<serde_json::Value>) = if let Some(snap) = dvr_snap {
+        let mut air_v = Vec::new();
+        let mut sea_v = Vec::new();
+        for t in &snap.tracks {
+            if t.domain == Domain::Air {
+                air_v.push(serde_json::json!({
+                    "id": t.id,
+                    "cs": t.callsign,
+                    "lat": t.lat,
+                    "lon": t.lon,
+                    "mil": t.is_military,
+                    "cls": "",
+                    "hdg": t.hdg_deg,
+                    "aor": "DVR",
+                    "rt": "",
+                    "info": format!("DVR -{}dk ({}Z) | {:.0}kt {:.0}m", st.dvr.replay_offset_mins, snap.timestamp.format("%H:%M"), t.spd_kts, t.alt_m),
+                }));
+            } else if t.domain == Domain::Sea {
+                sea_v.push(serde_json::json!({
+                    "id": t.id,
+                    "cs": t.callsign,
+                    "lat": t.lat,
+                    "lon": t.lon,
+                    "mil": t.is_military,
+                    "info": format!("DVR -{}dk ({}Z) | {:.1}kt", st.dvr.replay_offset_mins, snap.timestamp.format("%H:%M"), t.spd_kts),
+                }));
+            }
+        }
+        (air_v, sea_v)
+    } else {
+        let air_v = st
+            .air_targets
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "cs": t.callsign,
+                    "lat": t.geo.lat,
+                    "lon": t.geo.lon,
+                    "mil": t.is_military,
+                    "cls": t.airframe_or_vessel_class.as_deref().unwrap_or(""),
+                    "hdg": t.heading_deg.unwrap_or(0.0),
+                    "aor": t.origin.as_deref().unwrap_or("KURESEL"),
+                    "rt": t.destination.as_deref().unwrap_or(""),
+                    "info": t.info,
+                })
             })
-        })
-        .collect();
-
-    let sea: Vec<serde_json::Value> = st
-        .sea_targets
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "id": t.id,
-                "cs": t.callsign,
-                "lat": t.geo.lat,
-                "lon": t.geo.lon,
-                "mil": t.is_military,
-                "info": t.info,
+            .collect();
+        let sea_v = st
+            .sea_targets
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "cs": t.callsign,
+                    "lat": t.geo.lat,
+                    "lon": t.geo.lon,
+                    "mil": t.is_military,
+                    "info": t.info,
+                })
             })
-        })
-        .collect();
+            .collect();
+        (air_v, sea_v)
+    };
 
     let sats: Vec<serde_json::Value> = st
         .satellites

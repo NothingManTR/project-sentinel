@@ -276,7 +276,6 @@ pub struct AlertItem {
 /// Sentinel Çalışma Alanı / Ekran Seçimi
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ActiveView {
-    Splash,
     Dashboard,
     Geoint,
     AirTracks,
@@ -293,7 +292,6 @@ pub enum ActiveView {
 impl ActiveView {
     pub fn title(&self) -> &'static str {
         match self {
-            ActiveView::Splash => "SENTINEL-BIOS v4.10.1998 POST INITIALIZATION",
             ActiveView::Dashboard => "DASHBOARD (KONSOL MOZAIK)",
             ActiveView::Geoint => "GEOINT: COGRAFI ISTIHBARAT & VEKTOR HARITA",
             ActiveView::AirTracks => "HAVA TRAFIGI & ASKERI HEDEFLER (ADS-B RADAR)",
@@ -310,7 +308,6 @@ impl ActiveView {
 
     pub fn code(&self) -> &'static str {
         match self {
-            ActiveView::Splash => "BOOT",
             ActiveView::Dashboard => "P000",
             ActiveView::Geoint => "P100",
             ActiveView::AirTracks => "P310",
@@ -594,4 +591,48 @@ pub struct FlashAlertBanner {
     pub target_id: Option<String>,
     pub acked: bool,
     pub triggered_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FeedStatus {
+    Ok,
+    Degraded,
+    Error,
+    NoKey,
+}
+
+impl FeedStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FeedStatus::Ok => "OK",
+            FeedStatus::Degraded => "YAVAS",
+            FeedStatus::Error => "HATA",
+            FeedStatus::NoKey => "ANAHTAR YOK",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedHealth {
+    pub name: String,
+    pub status: FeedStatus,
+    pub last_ok: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub latency_ms: u64,
+    pub record_count: usize,
+    pub fail_streak: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingNotification {
+    pub title: String,
+    pub body: String,
+    pub severity: ThreatSeverity,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CommandPaletteState {
+    pub is_open: bool,
+    pub query: String,
+    pub selected_idx: usize,
 }

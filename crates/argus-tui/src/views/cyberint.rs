@@ -137,7 +137,22 @@ pub fn render_cyberint_view(frame: &mut Frame, area: Rect, state: &mut AppState)
     let header = Row::new(header_cells).height(1).style(Style::default().bg(BG_SURFACE));
 
     let mut rows = Vec::new();
-    let total = state.cyber_incidents.len();
+    let q_lower = state.search_query.trim().to_lowercase();
+    let matched_indices: Vec<usize> = state
+        .cyber_incidents
+        .iter()
+        .enumerate()
+        .filter(|(_, inc)| {
+            q_lower.is_empty()
+                || inc.event_type.to_lowercase().contains(&q_lower)
+                || inc.title.to_lowercase().contains(&q_lower)
+                || inc.target.to_lowercase().contains(&q_lower)
+                || inc.cve.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
+                || inc.asn.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let total = matched_indices.len();
     let visible_rows = chunks[2].height.saturating_sub(3) as usize;
     let max_scroll = total.saturating_sub(1);
     if state.cyber_scroll > max_scroll {
@@ -145,8 +160,10 @@ pub fn render_cyberint_view(frame: &mut Frame, area: Rect, state: &mut AppState)
     }
     let start_idx = state.cyber_scroll;
 
-    for (row_offset, inc) in state.cyber_incidents.iter().skip(start_idx).take(visible_rows).enumerate() {
-        let actual_idx = start_idx + row_offset;
+    for (row_offset, &actual_idx) in matched_indices.iter().skip(start_idx).take(visible_rows).enumerate() {
+        let Some(inc) = state.cyber_incidents.get(actual_idx) else {
+            continue;
+        };
         let is_sel = (state.selected_domain == 4 && state.selected_row == actual_idx)
             || (state.selected_domain != 4 && row_offset == 0);
         let zebra_bg = if row_offset % 2 == 0 {

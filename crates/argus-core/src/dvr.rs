@@ -74,11 +74,37 @@ impl Default for DvrSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DvrTimeline {
     pub snapshots: VecDeque<DvrSnapshot>,
     pub replay_offset_mins: u32,
     pub last_recorded_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub is_playing: bool,
+    #[serde(default = "default_play_speed")]
+    pub play_speed: u8,
+    #[serde(default)]
+    pub active_archive: Option<String>,
+    #[serde(default)]
+    pub show_track_history: bool,
+}
+
+fn default_play_speed() -> u8 {
+    1
+}
+
+impl Default for DvrTimeline {
+    fn default() -> Self {
+        Self {
+            snapshots: VecDeque::new(),
+            replay_offset_mins: 0,
+            last_recorded_at: None,
+            is_playing: false,
+            play_speed: 1,
+            active_archive: None,
+            show_track_history: false,
+        }
+    }
 }
 
 impl DvrTimeline {
@@ -126,17 +152,32 @@ impl DvrTimeline {
             alert_summary,
         };
 
-        if self.snapshots.len() >= 60 {
-            self.snapshots.pop_front();
+        // Arsiv inceleme modunda degilsek RAM halka tamponunu guncelle
+        if self.active_archive.is_none() {
+            if self.snapshots.len() >= 360 {
+                self.snapshots.pop_front();
+            }
+            self.snapshots.push_back(snap.clone());
         }
-        self.snapshots.push_back(snap.clone());
         self.last_recorded_at = Some(now);
 
         let _ = append_snapshot_jsonl(dir, &snap);
     }
 
+    pub fn max_offset_mins(&self) -> u32 {
+        if let (Some(oldest), Some(newest)) = (self.snapshots.front(), self.snapshots.back()) {
+            let span = (newest.timestamp - oldest.timestamp).num_minutes().unsigned_abs() as u32;
+            span.max(self.snapshots.len().saturating_sub(1) as u32).clamp(60, 1440)
+        } else {
+            60
+        }
+    }
+
     pub fn active_snapshot(&self) -> Option<&DvrSnapshot> {
-        if self.replay_offset_mins == 0 || self.snapshots.is_empty() {
+        if self.replay_offset_mins == 0 && self.active_archive.is_none() {
+            return None;
+        }
+        if self.snapshots.is_empty() {
             return None;
         }
         let newest = self.snapshots.back()?;
@@ -167,9 +208,161 @@ impl DvrTimeline {
     pub fn step_offset(&mut self, delta_mins: i32) {
         if delta_mins == 0 {
             self.replay_offset_mins = 0;
+            self.is_playing = false;
+            if self.active_archive.is_some() {
+                self.active_archive = None;
+                let _ = self.load_recent_from_dir(Path::new("recordings"), 180);
+            }
         } else {
-            self.replay_offset_mins = (self.replay_offset_mins as i32 - delta_mins).clamp(0, 60) as u32;
+            let max_m = self.max_offset_mins() as i32;
+            self.replay_offset_mins = (self.replay_offset_mins as i32 - delta_mins).clamp(0, max_m) as u32;
+            if self.replay_offset_mins == 0 {
+                self.is_playing = false;
+            }
         }
+    }
+
+    pub fn toggle_play(&mut self) {
+        if self.snapshots.is_empty() {
+            self.is_playing = false;
+            return;
+        }
+        self.is_playing = !self.is_playing;
+        if self.is_playing && self.replay_offset_mins == 0 {
+            let span = self.max_offset_mins().min(60);
+            self.replay_offset_mins = span.max(1);
+        }
+    }
+
+    pub fn cycle_speed(&mut self) {
+        self.play_speed = match self.play_speed {
+            1 => 5,
+            5 => 10,
+            _ => 1,
+        };
+    }
+
+    /// Otomatik oynatma adimi: geriden CANLI'ya dogru ilerler.
+    pub fn advance_playback(&mut self) -> bool {
+        if !self.is_playing || self.snapshots.is_empty() {
+            return false;
+        }
+        let step = (self.play_speed.max(1)) as u32;
+        if self.replay_offset_mins <= step {
+            self.replay_offset_mins = 0;
+            self.is_playing = false;
+        } else {
+            self.replay_offset_mins -= step;
+        }
+        true
+    }
+
+    /// Secili hedef ID'si icin yuklu DVR karelerindeki tum rota noktalarini (lon, lat) cikarir.
+    pub fn extract_track_history(&self, target_id: &str) -> Vec<(f64, f64)> {
+        let mut pts: Vec<(f64, f64)> = Vec::new();
+        for snap in &self.snapshots {
+            if let Some(tp) = snap.tracks.iter().find(|t| t.id == target_id) {
+                let pt = (tp.lon as f64, tp.lat as f64);
+                let should_push = match pts.last() {
+                    Some(&(lx, ly)) => (lx - pt.0).abs() > 0.0005 || (ly - pt.1).abs() > 0.0005,
+                    None => true,
+                };
+                if should_push {
+                    pts.push(pt);
+                }
+            }
+        }
+        pts
+    }
+
+    /// `recordings/` dizinindeki `timeline_*.jsonl` arsiv dosyalarini yeninden eskiye listeler.
+    pub fn list_archive_files(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Ok(rd) = fs::read_dir(dir) {
+            for ent in rd.flatten() {
+                let name = ent.file_name().to_string_lossy().to_string();
+                if name.starts_with("timeline_") && name.ends_with(".jsonl") {
+                    out.push(name);
+                }
+            }
+        }
+        out.sort();
+        out.reverse();
+        out
+    }
+
+    /// Belirli bir JSONL arsiv dosyasindan son `max_snapshots` kaydi RAM'e yukler.
+    pub fn load_jsonl_file(&mut self, path: &Path, max_snapshots: usize) -> std::io::Result<usize> {
+        let content = fs::read_to_string(path)?;
+        let mut loaded: VecDeque<DvrSnapshot> = VecDeque::new();
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(snap) = serde_json::from_str::<DvrSnapshot>(trimmed) {
+                if loaded.len() >= max_snapshots {
+                    loaded.pop_front();
+                }
+                loaded.push_back(snap);
+            }
+        }
+        let count = loaded.len();
+        self.snapshots = loaded;
+        if let Some(last) = self.snapshots.back() {
+            self.last_recorded_at = Some(last.timestamp);
+        }
+        Ok(count)
+    }
+
+    /// Acilista bugunun (veya en guncel) `timeline_*.jsonl` dosyasindan son kareleri yukler.
+    pub fn load_recent_from_dir(&mut self, dir: &Path, max_snapshots: usize) -> usize {
+        let today = format!("timeline_{}.jsonl", Utc::now().format("%Y%m%d"));
+        let today_path = dir.join(&today);
+        if today_path.exists() {
+            if let Ok(n) = self.load_jsonl_file(&today_path, max_snapshots) {
+                return n;
+            }
+        }
+        if let Some(latest) = Self::list_archive_files(dir).first() {
+            if let Ok(n) = self.load_jsonl_file(&dir.join(latest), max_snapshots) {
+                return n;
+            }
+        }
+        0
+    }
+
+    /// Arsiv dosyalari arasinda dongusel gecis yapar (CANLI -> arsiv_0 -> arsiv_1 -> CANLI).
+    pub fn cycle_archive_in(&mut self, dir: &Path) -> Option<String> {
+        let files = Self::list_archive_files(dir);
+        if files.is_empty() {
+            return None;
+        }
+        let next_idx = match &self.active_archive {
+            None => Some(0),
+            Some(cur) => {
+                let pos = files.iter().position(|f| f == cur);
+                match pos {
+                    Some(i) if i + 1 < files.len() => Some(i + 1),
+                    _ => None,
+                }
+            }
+        };
+        if let Some(idx) = next_idx {
+            let fname = files[idx].clone();
+            if self.load_jsonl_file(&dir.join(&fname), 360).is_ok() {
+                self.active_archive = Some(fname.clone());
+                self.replay_offset_mins = self.max_offset_mins().min(60);
+                self.is_playing = false;
+                return Some(fname);
+            }
+        } else {
+            self.active_archive = None;
+            self.replay_offset_mins = 0;
+            self.is_playing = false;
+            let _ = self.load_recent_from_dir(dir, 180);
+        }
+        None
     }
 }
 
@@ -363,9 +556,23 @@ mod tests {
         assert_eq!(dvr.snapshots.len(), 1);
 
         let filename = format!("timeline_{}.jsonl", dvr.snapshots[0].timestamp.format("%Y%m%d"));
-        let jsonl = fs::read_to_string(tmp_dir.join(filename)).expect("jsonl file");
+        let jsonl = fs::read_to_string(tmp_dir.join(&filename)).expect("jsonl file");
         assert!(jsonl.contains("\"id\":\"MIL1\""));
         assert!(jsonl.contains("\"is_military\":true"));
+
+        // Reload from disk & verify track history + playback
+        let mut reloaded = DvrTimeline::default();
+        let n = reloaded.load_recent_from_dir(&tmp_dir, 60);
+        assert_eq!(n, 1);
+        let hist = reloaded.extract_track_history("MIL1");
+        assert_eq!(hist.len(), 1);
+        assert!((hist[0].1 - 40.5).abs() < 0.01);
+
+        reloaded.toggle_play();
+        assert!(reloaded.is_playing);
+        reloaded.cycle_speed();
+        assert_eq!(reloaded.play_speed, 5);
+        assert!(reloaded.advance_playback());
 
         let _ = fs::remove_dir_all(&tmp_dir);
     }

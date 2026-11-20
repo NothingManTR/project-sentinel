@@ -24,6 +24,7 @@ pub mod weather_owm;
 use argus_core::state::AppState;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::time::{sleep, Duration};
 
 /// Tüm asenkron canlı veri toplayıcılarını Tokio görev havuzunda başlatır
@@ -99,9 +100,12 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
     if let Some(key) = &cfg.api_keys.aisstream_key {
         let client = aisstream::AisStreamClient::new(Some(key.clone()));
         let st = Arc::clone(&state);
+        state.write().record_feed_ok("AISStream VHF", 0, 0);
         tokio::spawn(async move {
             client.run_listener(st).await;
         });
+    } else {
+        state.write().record_feed_nokey("AISStream VHF", "aisstream_key tanimli degil");
     }
 
     // 2. OpenSky / ADS-B Görevi (Hava Trafiği - Dinamik İstasyon ve Harita Merkezi)
@@ -119,12 +123,20 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                         lock.map_center_lon,
                     )
                 };
-                if let Ok(tracks) = client.fetch_live_flights_at(s_lat, s_lon, m_lat, m_lon).await {
-                    let jamming_zones = client.detect_jamming_zones(&tracks);
-                    let mut lock = st.write();
-                    lock.gps_jamming_zones = jamming_zones;
-                    lock.upsert_targets_batch(tracks);
-                    lock.prune_stale_targets(900);
+                let t0 = Instant::now();
+                match client.fetch_live_flights_at(s_lat, s_lon, m_lat, m_lon).await {
+                    Ok(tracks) => {
+                        let cnt = tracks.len();
+                        let jamming_zones = client.detect_jamming_zones(&tracks);
+                        let mut lock = st.write();
+                        lock.gps_jamming_zones = jamming_zones;
+                        lock.upsert_targets_batch(tracks);
+                        lock.prune_stale_targets(900);
+                        lock.record_feed_ok("ADS-B Hava", t0.elapsed().as_millis() as u64, cnt);
+                    }
+                    Err(e) => {
+                        st.write().record_feed_err("ADS-B Hava", format!("{}", e), t0.elapsed().as_millis() as u64);
+                    }
                 }
                 sleep(Duration::from_secs(15)).await;
             }
@@ -137,16 +149,26 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
         let st = Arc::clone(&state);
         tokio::spawn(async move {
             loop {
-                if let Ok(fires) = client.fetch_recent_fires().await {
-                    let mut lock = st.write();
-                    for fire in fires {
-                        lock.upsert_fire(fire);
-                        lock.total_events_received += 1;
+                let t0 = Instant::now();
+                match client.fetch_recent_fires().await {
+                    Ok(fires) => {
+                        let cnt = fires.len();
+                        let mut lock = st.write();
+                        for fire in fires {
+                            lock.upsert_fire(fire);
+                            lock.total_events_received += 1;
+                        }
+                        lock.record_feed_ok("NASA FIRMS", t0.elapsed().as_millis() as u64, cnt);
+                    }
+                    Err(e) => {
+                        st.write().record_feed_err("NASA FIRMS", format!("{}", e), t0.elapsed().as_millis() as u64);
                     }
                 }
                 sleep(Duration::from_secs(60)).await;
             }
         });
+    } else {
+        state.write().record_feed_nokey("NASA FIRMS", "nasa_firms_key tanimli degil");
     }
 
     // 4. Çatışma ve Askeri Olaylar Görevi (ACLED birincil + Anahtarsız GDELT v2 15-dk CAMEO yedeği + EVI)
@@ -155,14 +177,22 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
         let st = Arc::clone(&state);
         tokio::spawn(async move {
             loop {
-                if let Ok((events, metrics)) = client.fetch_recent_conflicts_with_metrics().await {
-                    let mut lock = st.write();
-                    for ev in events {
-                        lock.upsert_acled_event(ev);
-                        lock.total_events_received += 1;
+                let t0 = Instant::now();
+                match client.fetch_recent_conflicts_with_metrics().await {
+                    Ok((events, metrics)) => {
+                        let cnt = events.len();
+                        let mut lock = st.write();
+                        for ev in events {
+                            lock.upsert_acled_event(ev);
+                            lock.total_events_received += 1;
+                        }
+                        if !metrics.is_empty() {
+                            lock.escalation_metrics = metrics;
+                        }
+                        lock.record_feed_ok("GDELT/ACLED", t0.elapsed().as_millis() as u64, cnt);
                     }
-                    if !metrics.is_empty() {
-                        lock.escalation_metrics = metrics;
+                    Err(e) => {
+                        st.write().record_feed_err("GDELT/ACLED", format!("{}", e), t0.elapsed().as_millis() as u64);
                     }
                 }
                 sleep(Duration::from_secs(180)).await;
@@ -180,9 +210,17 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                     let lock = st.read();
                     (lock.station_lat, lock.station_lon)
                 };
-                if let Ok(sats) = client.fetch_satellites(lat, lon).await {
-                    let mut lock = st.write();
-                    lock.satellites = sats;
+                let t0 = Instant::now();
+                match client.fetch_satellites(lat, lon).await {
+                    Ok(sats) => {
+                        let cnt = sats.len();
+                        let mut lock = st.write();
+                        lock.satellites = sats;
+                        lock.record_feed_ok("CelesTrak SGP4", t0.elapsed().as_millis() as u64, cnt);
+                    }
+                    Err(e) => {
+                        st.write().record_feed_err("CelesTrak SGP4", format!("{}", e), t0.elapsed().as_millis() as u64);
+                    }
                 }
                 sleep(Duration::from_secs(15)).await;
             }
@@ -195,11 +233,19 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
             let client = news_wire::NewsWireClient::new();
             loop {
-                if let Ok(news_items) = client.fetch_latest_news().await {
-                    let mut lock = st.write();
-                    for item in news_items {
-                        lock.upsert_news(item);
-                        lock.total_events_received += 1;
+                let t0 = Instant::now();
+                match client.fetch_latest_news().await {
+                    Ok(news_items) => {
+                        let cnt = news_items.len();
+                        let mut lock = st.write();
+                        for item in news_items {
+                            lock.upsert_news(item);
+                            lock.total_events_received += 1;
+                        }
+                        lock.record_feed_ok("OSINT Haber", t0.elapsed().as_millis() as u64, cnt);
+                    }
+                    Err(e) => {
+                        st.write().record_feed_err("OSINT Haber", format!("{}", e), t0.elapsed().as_millis() as u64);
                     }
                 }
                 sleep(Duration::from_secs(30)).await;
@@ -213,11 +259,19 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
             let client = usgs_seismic::UsgsClient::new();
             loop {
-                if let Ok(quakes) = client.fetch_recent_earthquakes().await {
-                    let mut lock = st.write();
-                    for q in quakes {
-                        lock.upsert_earthquake(q);
-                        lock.total_events_received += 1;
+                let t0 = Instant::now();
+                match client.fetch_recent_earthquakes().await {
+                    Ok(quakes) => {
+                        let cnt = quakes.len();
+                        let mut lock = st.write();
+                        for q in quakes {
+                            lock.upsert_earthquake(q);
+                            lock.total_events_received += 1;
+                        }
+                        lock.record_feed_ok("USGS/Kandilli", t0.elapsed().as_millis() as u64, cnt);
+                    }
+                    Err(e) => {
+                        st.write().record_feed_err("USGS/Kandilli", format!("{}", e), t0.elapsed().as_millis() as u64);
                     }
                 }
                 sleep(Duration::from_secs(30)).await;
@@ -232,18 +286,34 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
             let cisa = cisa_kev::CisaKevClient::new();
             let ioda = ioda_outages::IodaClient::new();
             loop {
-                if let Ok(vulns) = cisa.fetch_exploited_vulns().await {
-                    let mut lock = st.write();
-                    for v in vulns {
-                        lock.upsert_cyber_incident(v);
-                        lock.total_events_received += 1;
+                let t0 = Instant::now();
+                match cisa.fetch_exploited_vulns().await {
+                    Ok(vulns) => {
+                        let cnt = vulns.len();
+                        let mut lock = st.write();
+                        for v in vulns {
+                            lock.upsert_cyber_incident(v);
+                            lock.total_events_received += 1;
+                        }
+                        lock.record_feed_ok("CISA KEV", t0.elapsed().as_millis() as u64, cnt);
+                    }
+                    Err(e) => {
+                        st.write().record_feed_err("CISA KEV", format!("{}", e), t0.elapsed().as_millis() as u64);
                     }
                 }
-                if let Ok(outages) = ioda.fetch_internet_outages().await {
-                    let mut lock = st.write();
-                    for out in outages {
-                        lock.upsert_cyber_incident(out);
-                        lock.total_events_received += 1;
+                let t1 = Instant::now();
+                match ioda.fetch_internet_outages().await {
+                    Ok(outages) => {
+                        let cnt = outages.len();
+                        let mut lock = st.write();
+                        for out in outages {
+                            lock.upsert_cyber_incident(out);
+                            lock.total_events_received += 1;
+                        }
+                        lock.record_feed_ok("IODA BGP", t1.elapsed().as_millis() as u64, cnt);
+                    }
+                    Err(e) => {
+                        st.write().record_feed_err("IODA BGP", format!("{}", e), t1.elapsed().as_millis() as u64);
                     }
                 }
                 sleep(Duration::from_secs(60)).await;
@@ -257,9 +327,16 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
             let client = noaa_space::NoaaSpaceClient::new();
             loop {
-                if let Ok(sw) = client.fetch_space_weather().await {
-                    let mut lock = st.write();
-                    lock.solar_weather = Some(sw);
+                let t0 = Instant::now();
+                match client.fetch_space_weather().await {
+                    Ok(sw) => {
+                        let mut lock = st.write();
+                        lock.solar_weather = Some(sw);
+                        lock.record_feed_ok("NOAA SWPC", t0.elapsed().as_millis() as u64, 1);
+                    }
+                    Err(e) => {
+                        st.write().record_feed_err("NOAA SWPC", format!("{}", e), t0.elapsed().as_millis() as u64);
+                    }
                 }
                 sleep(Duration::from_secs(60)).await;
             }
@@ -269,12 +346,14 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
     // 10. SIGINT & HFGCS EAM Görevi + Canlı KiwiSDR Kısa Dalga Ses/Spektrum İstemcisi
     {
         let st = Arc::clone(&state);
+        state.write().record_feed_ok("HFGCS EAM", 0, 0);
         tokio::spawn(async move {
             eam_sigint::start_sigint_worker(st).await;
         });
     }
     {
         let st = Arc::clone(&state);
+        state.write().record_feed_ok("KiwiSDR HF", 0, 0);
         tokio::spawn(async move {
             kiwisdr::run_kiwisdr_worker(st).await;
         });
@@ -286,11 +365,19 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
             let client = safecast_radiation::SafecastClient::new();
             loop {
-                if let Ok(measurements) = client.fetch_radiation_measurements().await {
-                    let mut lock = st.write();
-                    for m in measurements {
-                        lock.upsert_radiation_measurement(m);
-                        lock.total_events_received += 1;
+                let t0 = Instant::now();
+                match client.fetch_radiation_measurements().await {
+                    Ok(measurements) => {
+                        let cnt = measurements.len();
+                        let mut lock = st.write();
+                        for m in measurements {
+                            lock.upsert_radiation_measurement(m);
+                            lock.total_events_received += 1;
+                        }
+                        lock.record_feed_ok("Safecast CBRN", t0.elapsed().as_millis() as u64, cnt);
+                    }
+                    Err(e) => {
+                        st.write().record_feed_err("Safecast CBRN", format!("{}", e), t0.elapsed().as_millis() as u64);
                     }
                 }
                 sleep(Duration::from_secs(45)).await;
@@ -307,6 +394,7 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                 .build()
                 .unwrap_or_default();
             loop {
+                let t0 = Instant::now();
                 if let Some(defcon) = defcon_osint::fetch_osint_defcon(&client).await {
                     let mut lock = st.write();
                     let prev_lvl = lock.defcon_status.as_ref().map(|d| d.overall_level);
@@ -344,6 +432,9 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                     }
                     lock.defcon_status = Some(defcon);
                     lock.total_events_received = lock.total_events_received.wrapping_add(1);
+                    lock.record_feed_ok("OSINT DEFCON", t0.elapsed().as_millis() as u64, 1);
+                } else {
+                    st.write().record_feed_err("OSINT DEFCON", "Kaynak yanit vermedi", t0.elapsed().as_millis() as u64);
                 }
                 sleep(Duration::from_secs(180)).await;
             }
@@ -360,10 +451,15 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                 .build()
                 .unwrap_or_default();
             loop {
+                let t0 = Instant::now();
                 let cables = subsea_cables::fetch_subsea_cables(&client).await;
                 if !cables.is_empty() {
+                    let cnt = cables.len();
                     let mut lock = st.write();
                     lock.subsea_cables = cables;
+                    lock.record_feed_ok("Subsea Kablo", t0.elapsed().as_millis() as u64, cnt);
+                } else {
+                    st.write().record_feed_err("Subsea Kablo", "GeoJSON bos/erisilemedi", t0.elapsed().as_millis() as u64);
                 }
                 sleep(Duration::from_secs(43200)).await;
             }
@@ -383,9 +479,11 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                     let r = st.read();
                     (r.station_lat, r.station_lon)
                 };
+                let t0 = Instant::now();
                 let (station_wx, points) =
                     weather_owm::fetch_weather_snapshot(&client, &owm_key, slat, slon).await;
                 if station_wx.is_some() || !points.is_empty() {
+                    let cnt = points.len() + usize::from(station_wx.is_some());
                     let mut lock = st.write();
                     if station_wx.is_some() {
                         lock.station_weather = station_wx;
@@ -393,10 +491,15 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                     if !points.is_empty() {
                         lock.weather_points = points;
                     }
+                    lock.record_feed_ok("OpenWeatherMap", t0.elapsed().as_millis() as u64, cnt);
+                } else {
+                    st.write().record_feed_err("OpenWeatherMap", "OWM yanit yok/401", t0.elapsed().as_millis() as u64);
                 }
                 sleep(Duration::from_secs(600)).await;
             }
         });
+    } else {
+        state.write().record_feed_nokey("OpenWeatherMap", "openweather_key tanimli degil");
     }
 
     // 15. K-4: Çapraz-Alan Füzyon & Hava/Deniz İz Anomalisi Motoru
@@ -405,9 +508,12 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
         tokio::spawn(async move {
             sleep(Duration::from_secs(6)).await;
             loop {
+                let t0 = Instant::now();
                 {
                     let mut lock = st.write();
                     argus_core::fusion::recompute_fusion_and_anomalies(&mut lock);
+                    let cnt = lock.fusion_clusters.len() + lock.track_anomalies.len();
+                    lock.record_feed_ok("K-4 Fuzyon", t0.elapsed().as_millis() as u64, cnt);
                 }
                 sleep(Duration::from_secs(8)).await;
             }
@@ -426,15 +532,39 @@ pub fn start_ingestion_workers(state: Arc<RwLock<AppState>>) {
                 .unwrap_or_default();
             loop {
                 let jam_snapshot = st.read().gps_jamming_zones.clone();
+                let t0 = Instant::now();
                 let warnings = airspace_warnings::fetch_airspace_warnings(&client, &jam_snapshot).await;
                 if !warnings.is_empty() {
+                    let cnt = warnings.len();
                     let mut lock = st.write();
                     lock.airspace_warnings = warnings;
+                    lock.record_feed_ok("NOTAM/SIGMET", t0.elapsed().as_millis() as u64, cnt);
+                } else {
+                    st.write().record_feed_err("NOTAM/SIGMET", "Uyari alinamadi", t0.elapsed().as_millis() as u64);
                 }
                 sleep(Duration::from_secs(120)).await;
             }
         });
     }
+}
+
+/// Kritik alarmlar için opsiyonel Discord/Slack/Generic Webhook POST gönderimi (Y-1)
+pub async fn dispatch_webhook_notification(url: &str, title: &str, body: &str) {
+    let url = url.trim();
+    if url.is_empty() {
+        return;
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .user_agent("Project-Sentinel/0.1")
+        .build()
+        .unwrap_or_default();
+    let text = format!("**[{}]** {}", title, body);
+    let payload = serde_json::json!({
+        "content": text,
+        "text": text,
+    });
+    let _ = client.post(url).json(&payload).send().await;
 }
 
 #[cfg(test)]

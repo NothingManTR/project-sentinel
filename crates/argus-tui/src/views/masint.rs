@@ -182,7 +182,20 @@ fn render_masint_header_bar(frame: &mut Frame, area: Rect, state: &mut AppState)
 
 fn render_firms_table(frame: &mut Frame, table_area: Rect, state: &mut AppState) {
     let avail_h = table_area.height.saturating_sub(3) as usize;
-    let f_total = state.firms_fires.len();
+    let q_lower = state.search_query.trim().to_lowercase();
+    let matched: Vec<usize> = state
+        .firms_fires
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| {
+            q_lower.is_empty()
+                || f.satellite.to_lowercase().contains(&q_lower)
+                || f.acq_date.to_lowercase().contains(&q_lower)
+                || format!("{:.2},{:.2}", f.lat, f.lon).contains(&q_lower)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let f_total = matched.len();
     let scroll = state.geo_scroll.min(f_total.saturating_sub(1));
     let header = masint_table_header(&[
         "UYDU",
@@ -193,14 +206,10 @@ fn render_firms_table(frame: &mut Frame, table_area: Rect, state: &mut AppState)
     ]);
 
     let mut rows = Vec::new();
-    for (offset, f) in state
-        .firms_fires
-        .iter()
-        .skip(scroll)
-        .take(avail_h)
-        .enumerate()
-    {
-        let actual_idx = scroll + offset;
+    for (offset, &actual_idx) in matched.iter().skip(scroll).take(avail_h).enumerate() {
+        let Some(f) = state.firms_fires.get(actual_idx) else {
+            continue;
+        };
         let is_sel = (state.selected_domain == 51 && state.selected_row == actual_idx)
             || (state.selected_domain != 51 && offset == 0);
         let row_st = masint_row_style(is_sel, offset, TELETEXT_RED, false);
@@ -257,7 +266,20 @@ fn render_firms_table(frame: &mut Frame, table_area: Rect, state: &mut AppState)
 
 fn render_radiation_table(frame: &mut Frame, table_area: Rect, state: &mut AppState) {
     let avail_h = table_area.height.saturating_sub(3) as usize;
-    let r_total = state.radiation_measurements.len();
+    let q_lower = state.search_query.trim().to_lowercase();
+    let matched: Vec<usize> = state
+        .radiation_measurements
+        .iter()
+        .enumerate()
+        .filter(|(_, rad)| {
+            q_lower.is_empty()
+                || rad.id.to_string().contains(&q_lower)
+                || rad.location_name.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
+                || rad.unit.to_lowercase().contains(&q_lower)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let r_total = matched.len();
     let scroll = state.radiation_scroll.min(r_total.saturating_sub(1));
     let header = masint_table_header(&[
         "SENSOR ID",
@@ -269,14 +291,10 @@ fn render_radiation_table(frame: &mut Frame, table_area: Rect, state: &mut AppSt
     ]);
 
     let mut rows = Vec::new();
-    for (offset, rad) in state
-        .radiation_measurements
-        .iter()
-        .skip(scroll)
-        .take(avail_h)
-        .enumerate()
-    {
-        let actual_idx = scroll + offset;
+    for (offset, &actual_idx) in matched.iter().skip(scroll).take(avail_h).enumerate() {
+        let Some(rad) = state.radiation_measurements.get(actual_idx) else {
+            continue;
+        };
         let is_sel = (state.selected_domain == 53 && state.selected_row == actual_idx)
             || (state.selected_domain != 53 && offset == 0);
         let usvh = if rad.unit == "cpm" {
@@ -344,19 +362,29 @@ fn render_radiation_table(frame: &mut Frame, table_area: Rect, state: &mut AppSt
 
 fn render_airspace_table(frame: &mut Frame, table_area: Rect, state: &mut AppState) {
     let avail_h = table_area.height.saturating_sub(3) as usize;
-    let n_total = state.airspace_warnings.len();
+    let q_lower = state.search_query.trim().to_lowercase();
+    let matched: Vec<usize> = state
+        .airspace_warnings
+        .iter()
+        .enumerate()
+        .filter(|(_, aw)| {
+            q_lower.is_empty()
+                || aw.kind.to_lowercase().contains(&q_lower)
+                || aw.fir_or_zone.to_lowercase().contains(&q_lower)
+                || aw.hazard.to_lowercase().contains(&q_lower)
+                || aw.summary.to_lowercase().contains(&q_lower)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let n_total = matched.len();
     let scroll = state.geo_scroll.min(n_total.saturating_sub(1));
     let header = masint_table_header(&["TUR", "FIR / BOLGE", "TEHLIKE", "UST IRTIFA", "OZET"]);
 
     let mut rows = Vec::new();
-    for (offset, aw) in state
-        .airspace_warnings
-        .iter()
-        .skip(scroll)
-        .take(avail_h)
-        .enumerate()
-    {
-        let actual_idx = scroll + offset;
+    for (offset, &actual_idx) in matched.iter().skip(scroll).take(avail_h).enumerate() {
+        let Some(aw) = state.airspace_warnings.get(actual_idx) else {
+            continue;
+        };
         let is_sel = (state.selected_domain == 54 && state.selected_row == actual_idx)
             || (state.selected_domain != 54 && offset == 0);
         let (fg_col, is_bold) = match aw.kind.as_str() {
@@ -418,7 +446,19 @@ fn render_airspace_table(frame: &mut Frame, table_area: Rect, state: &mut AppSta
 
 fn render_earthquakes_table(frame: &mut Frame, table_area: Rect, state: &mut AppState) {
     let avail_h = table_area.height.saturating_sub(3) as usize;
-    let q_total = state.earthquakes.len();
+    let q_lower = state.search_query.trim().to_lowercase();
+    let matched: Vec<usize> = state
+        .earthquakes
+        .iter()
+        .enumerate()
+        .filter(|(_, q)| {
+            q_lower.is_empty()
+                || q.place.to_lowercase().contains(&q_lower)
+                || q.id.to_lowercase().contains(&q_lower)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let q_total = matched.len();
     let scroll = state.geo_scroll.min(q_total.saturating_sub(1));
     let header = masint_table_header(&[
         "KAYNAK",
@@ -429,14 +469,10 @@ fn render_earthquakes_table(frame: &mut Frame, table_area: Rect, state: &mut App
     ]);
 
     let mut rows = Vec::new();
-    for (offset, q) in state
-        .earthquakes
-        .iter()
-        .skip(scroll)
-        .take(avail_h)
-        .enumerate()
-    {
-        let actual_idx = scroll + offset;
+    for (offset, &actual_idx) in matched.iter().skip(scroll).take(avail_h).enumerate() {
+        let Some(q) = state.earthquakes.get(actual_idx) else {
+            continue;
+        };
         let is_sel = (state.selected_domain == 50 && state.selected_row == actual_idx)
             || (state.selected_domain != 50 && offset == 0);
         let mag_col = if q.mag >= 6.0 {
@@ -503,15 +539,33 @@ fn render_earthquakes_table(frame: &mut Frame, table_area: Rect, state: &mut App
 
 pub fn render_anomaly_alerts_table(frame: &mut Frame, table_area: Rect, state: &mut AppState) {
     let avail_h = table_area.height.saturating_sub(3) as usize;
+    let q_lower = state.search_query.trim().to_lowercase();
     let alerts_rev: Vec<(usize, argus_core::types::AlertItem)> = state
         .alerts
         .iter()
         .enumerate()
+        .filter(|(_, a)| {
+            q_lower.is_empty()
+                || a.domain.to_lowercase().contains(&q_lower)
+                || a.message.to_lowercase().contains(&q_lower)
+                || a.target_id.as_deref().unwrap_or("").to_lowercase().contains(&q_lower)
+        })
         .map(|(i, a)| (i, a.clone()))
         .rev()
         .collect();
+    let fusion_matched: Vec<(usize, argus_core::types::FusionCluster)> = state
+        .fusion_clusters
+        .iter()
+        .enumerate()
+        .filter(|(_, fc)| {
+            q_lower.is_empty()
+                || fc.summary.to_lowercase().contains(&q_lower)
+                || fc.domains.iter().any(|d| d.to_lowercase().contains(&q_lower))
+        })
+        .map(|(i, fc)| (i, fc.clone()))
+        .collect();
     let a_len = alerts_rev.len();
-    let f_len = state.fusion_clusters.len();
+    let f_len = fusion_matched.len();
     let total = a_len + f_len;
     let scroll = state.alert_scroll.min(total.saturating_sub(1));
 
@@ -567,10 +621,8 @@ pub fn render_anomaly_alerts_table(frame: &mut Frame, table_area: Rect, state: &
                 HitTarget::AlertItem(*orig_idx),
             );
         } else {
-            let fc_idx = actual_idx - a_len;
-            let Some(fc) = state.fusion_clusters.get(fc_idx) else {
-                continue;
-            };
+            let (fc_idx, fc) = &fusion_matched[actual_idx - a_len];
+            let fc_idx = *fc_idx;
             let is_sel = state.selected_domain == 55 && state.selected_row == fc_idx;
             let row_st = masint_row_style(is_sel, offset, TELETEXT_CYAN, true);
             let time_cell = if is_sel {

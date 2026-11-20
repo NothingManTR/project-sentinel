@@ -56,6 +56,33 @@ impl Default for AudioConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationsConfig {
+    #[serde(default = "default_true")]
+    pub desktop_enabled: bool,
+    pub webhook_url: Option<String>,
+    #[serde(default = "default_notify_cooldown")]
+    pub cooldown_secs: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_notify_cooldown() -> u64 {
+    300
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            desktop_enabled: true,
+            webhook_url: None,
+            cooldown_secs: 300,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     #[serde(default)]
@@ -66,6 +93,8 @@ pub struct AppConfig {
     pub acled: AcledConfig,
     #[serde(default)]
     pub audio: AudioConfig,
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
 }
 
 impl AppConfig {
@@ -137,6 +166,11 @@ impl AppConfig {
         if let Ok(val) = std::env::var("ARGUS_FLIGHTAWARE_KEY") {
             if !val.trim().is_empty() {
                 self.api_keys.flightaware_key = Some(val);
+            }
+        }
+        if let Ok(val) = std::env::var("ARGUS_WEBHOOK_URL") {
+            if !val.trim().is_empty() {
+                self.notifications.webhook_url = Some(val);
             }
         }
     }

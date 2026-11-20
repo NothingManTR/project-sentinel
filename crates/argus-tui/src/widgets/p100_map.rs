@@ -1486,13 +1486,74 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         );
     }
 
+    // Y-4: DVR Gunluk Hedef Rota Izi (Secili Hedefin Yuklu Tum DVR Karelerindeki Hareketi)
+    if state.dvr.show_track_history {
+        if let Some(sel_id) = &state.selected_target_id {
+            let hist = state.dvr.extract_track_history(sel_id);
+            if hist.len() >= 2 {
+                for seg in hist.windows(2) {
+                    let (lon1, lat1) = seg[0];
+                    let (lon2, lat2) = seg[1];
+                    if (lon1 - lon2).abs() > 180.0 {
+                        continue;
+                    }
+                    let steps = 12;
+                    for s in 0..=steps {
+                        let f = (s as f64) / (steps as f64);
+                        let p_lon = lon1 + (lon2 - lon1) * f;
+                        let p_lat = lat1 + (lat2 - lat1) * f;
+                        if let Some((sx, sy)) = to_screen(p_lon, p_lat) {
+                            put_overlay_str(
+                                frame.buffer_mut(),
+                                area,
+                                sx,
+                                sy,
+                                "·",
+                                TELETEXT_MAGENTA,
+                                None,
+                                true,
+                            );
+                        }
+                    }
+                }
+                if let Some(&(slon, slat)) = hist.first() {
+                    if let Some((sx, sy)) = to_screen(slon, slat) {
+                        put_overlay_str(
+                            frame.buffer_mut(),
+                            area,
+                            sx,
+                            sy,
+                            "[BAS]",
+                            TELETEXT_MAGENTA,
+                            Some(BG_PRIMARY),
+                            true,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // DVR Replay Ust Orta Uyari Seridi
     if let Some(ref snap) = dvr_snap {
+        let arch_tag = state
+            .dvr
+            .active_archive
+            .as_deref()
+            .map(|a| format!(" {} │", a.trim_start_matches("timeline_").trim_end_matches(".jsonl")))
+            .unwrap_or_default();
+        let play_tag = if state.dvr.is_playing {
+            format!(" ▶{}x", state.dvr.play_speed)
+        } else {
+            String::new()
+        };
         let banner = format!(
-            " [<< DVR REPLAY: -{}dk ({}Z) | {} Iz] ",
+            " [<< DVR{}: -{}dk ({}Z) | {} Iz{}] ",
+            arch_tag,
             state.dvr.replay_offset_mins,
             snap.timestamp.format("%H:%M"),
-            snap.tracks.len()
+            snap.tracks.len(),
+            play_tag
         );
         let max_bw = area.width.saturating_sub(2) as usize;
         let clipped: String = banner.chars().take(max_bw).collect();
@@ -1510,7 +1571,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         );
     }
 
-    // 4. Alt Durum Şeridi + Sag Alt DVR Hizli Kontrol Butonlari
+    // 4. Alt Durum Şeridi + Sag Alt DVR Oynatici & Arsiv Kontrol Butonlari
     let fov_km = (2.0 * x_half * 111.0 * cos_lat).max(1.0);
     let sdr_legend = if state.geoint_layers & 128 != 0 {
         " [&]SDR"
@@ -1526,11 +1587,17 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
         " FOV:{:.0}km | Z:{:.1}x | {:.2}N,{:.2}E | {} [^]Deniz [*]Uydu [@]Deprem [#]Termal{} ",
         fov_km, zoom, state.map_center_lat, state.map_center_lon, air_legend, sdr_legend
     );
-    let dvr_btns = [
-        ("[<-60d]", HitTarget::DvrStep(-60), state.dvr.replay_offset_mins == 60),
-        ("[-15d]", HitTarget::DvrStep(-15), state.dvr.replay_offset_mins == 15),
-        ("[-5d]", HitTarget::DvrStep(-5), state.dvr.replay_offset_mins == 5),
-        ("[CANLI]", HitTarget::DvrStep(0), state.dvr.replay_offset_mins == 0),
+    let play_lbl = if state.dvr.is_playing { "[||]" } else { "[>]" };
+    let spd_lbl = format!("[{}x]", state.dvr.play_speed);
+    let dvr_btns: Vec<(String, HitTarget, bool)> = vec![
+        (play_lbl.to_string(), HitTarget::DvrPlayToggle, state.dvr.is_playing),
+        (spd_lbl, HitTarget::DvrSpeedCycle, state.dvr.play_speed > 1),
+        ("[Arsiv]".to_string(), HitTarget::DvrCycleArchive, state.dvr.active_archive.is_some()),
+        ("[Iz]".to_string(), HitTarget::DvrTrackHistoryToggle, state.dvr.show_track_history),
+        ("[-60d]".to_string(), HitTarget::DvrStep(-60), state.dvr.replay_offset_mins == 60),
+        ("[-15d]".to_string(), HitTarget::DvrStep(-15), state.dvr.replay_offset_mins == 15),
+        ("[-5d]".to_string(), HitTarget::DvrStep(-5), state.dvr.replay_offset_mins == 5),
+        ("[CANLI]".to_string(), HitTarget::DvrStep(0), state.dvr.replay_offset_mins == 0 && state.dvr.active_archive.is_none()),
     ];
     let btns_total_w: u16 = dvr_btns
         .iter()
@@ -1560,13 +1627,19 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
     }
     if area.width >= btns_total_w + 2 {
         let mut bx = right_edge.saturating_sub(btns_total_w);
-        for (lbl, target, active) in dvr_btns {
+        for (lbl, target, active) in &dvr_btns {
             let bw = lbl.chars().count() as u16;
             let is_live_btn = matches!(target, HitTarget::DvrStep(0));
-            let (fg, bg) = if active {
+            let (fg, bg) = if *active {
                 (
                     TELETEXT_BLACK,
-                    if is_live_btn { TELETEXT_GREEN } else { TELETEXT_YELLOW },
+                    if is_live_btn {
+                        TELETEXT_GREEN
+                    } else if matches!(target, HitTarget::DvrTrackHistoryToggle) {
+                        TELETEXT_MAGENTA
+                    } else {
+                        TELETEXT_YELLOW
+                    },
                 )
             } else {
                 (FG_PRIMARY, BG_SURFACE)
@@ -1579,7 +1652,7 @@ pub fn render_p100_map(frame: &mut Frame, area: Rect, state: &mut AppState) {
                     width: bw,
                     height: 1,
                 },
-                target,
+                *target,
             );
             bx += bw + 1;
         }

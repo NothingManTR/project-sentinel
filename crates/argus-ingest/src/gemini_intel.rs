@@ -967,8 +967,84 @@ pub fn build_mode_prompt(state: &AppState, mode: usize, custom_question: &str) -
                 base
             )
         }
+        5 => {
+            let prev_report = load_latest_saved_sitrep_in(std::path::Path::new("reports"))
+                .or_else(|| {
+                    state
+                        .ai_last_report
+                        .as_ref()
+                        .map(|(ts, body)| (format!("Bellekteki Son Rapor ({})", ts.format("%Y-%m-%d %H:%M UTC")), body.clone()))
+                });
+            let (prev_label, prev_excerpt) = match prev_report {
+                Some((fname, body)) => {
+                    let clipped: String = body.chars().take(4500).collect();
+                    (fname, clipped)
+                }
+                None => (
+                    "Onceki kayitli SITREP bulunamadi (Baz cizgisi olusturulacak)".to_string(),
+                    "Kayitli onceki rapor yok; mevcut anlik telemetriyi baz alip DVR/EVI trendlerine gore degisim analizi uret.".to_string(),
+                ),
+            };
+            format!(
+                "[MOD 6: DELTA / DEGISIM VE TIRMANMA FARK ANALIZI]\n\
+                Sen kidemli bir stratejik istihbarat degisim (delta) analistisin.\n\
+                Asagidaki ONCEKI BRIFING ile GUNCEL CANLI TELEMETRIYI karsilastirarak Turkce olarak su 4 baslikta net fark analizi uret:\n\
+                1. TIRMANAN CEPHLER & YENI KRIZ SINYALLERI (onceki rapordan bu yana ortaya cikan yeni askeri yiginak, AAR/Dark-Ship/NOTAM, siber veya catisma artisi)\n\
+                2. SONUMLENEN / STABILIZE OLAN BOLGELER (riski azalan veya normale donen eksenler)\n\
+                3. KRITIK METRIK FARK TABLOSU (DEFCON, askeri hava/deniz, EVI, K-4 Fuzyon ve alarm degisimleri)\n\
+                4. ONUMUZDEKI 6-24 SAAT ICIN GUNCEL IZLEME ONCELIKLERI (somut koordinat, cagri kodu ve frekans/sensor gorevlendirmesi)\n\n\
+                === ONCEKI KAYITLI BRIFING: {} ===\n{}\n\n\
+                === GUNCEL CANLI TELEMETRI ===\n{}",
+                prev_label, prev_excerpt, base
+            )
+        }
         _ => base,
     }
+}
+
+/// `reports/` dizinindeki en yeni `ai_sitrep_*.md` (veya `sentinel_report_*.md`) dosyasını okur.
+pub fn load_latest_saved_sitrep_in(dir: &std::path::Path) -> Option<(String, String)> {
+    let mut files: Vec<String> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            if (n.starts_with("ai_sitrep_") || n.starts_with("sentinel_report_")) && n.ends_with(".md") {
+                Some(n)
+            } else {
+                None
+            }
+        })
+        .collect();
+    files.sort();
+    let newest = files.pop()?;
+    let body = std::fs::read_to_string(dir.join(&newest)).ok()?;
+    Some((newest, body))
+}
+
+/// Çok-turlu etkileşimli AI takip sorusu (follow-up) için önceki sohbet geçmişi + canlı telemetri bağlamını üretir.
+pub fn build_followup_prompt(
+    state: &AppState,
+    history: &[(String, String)],
+    question: &str,
+) -> String {
+    let mut hist_buf = String::new();
+    for (role, text) in history.iter().rev().take(6).rev() {
+        let clipped: String = text.chars().take(1800).collect();
+        hist_buf.push_str(&format!("[{}]:\n{}\n\n", role, clipped));
+    }
+    let live_brief = build_tactical_prompt(state);
+    let live_clipped: String = live_brief.chars().take(5000).collect();
+    format!(
+        "[COK-TURLU AI ISTIHBARAT ANALISTI — TAKIP SORGUSU]\n\
+        Asagidaki onceki brifing/sohbet gecmisi ve guncel canli telemetri baglamina dayanarak analistin yeni takip sorusunu Turkce, kisa-oz, kanita dayali ve teknik olarak yanitla.\n\n\
+        === ONCEKI SOHBET GECMISI ===\n{}\
+        === GUNCEL TELEMETRI OZETI ===\n{}\n\n\
+        === ANALISTIN YENI TAKIP SORUSU ===\n{}",
+        if hist_buf.is_empty() { "Yok\n\n".to_string() } else { hist_buf },
+        live_clipped,
+        question.trim()
+    )
 }
 
 /// Gemini Interactions API yanıtından düz metni ayıklar (`steps` ve `outputs` uyumlu)
@@ -1267,5 +1343,17 @@ mod tests {
         assert!(m4.contains("GHOST SHIP"));
         assert!(m4.contains("LAGR10"));
         assert!(m4.contains("CVE-2024-1234"));
+
+        let m5 = build_mode_prompt(&st, 5, "");
+        assert!(m5.contains("[MOD 6: DELTA / DEGISIM VE TIRMANMA FARK ANALIZI]"));
+
+        let fu = build_followup_prompt(
+            &st,
+            &[("GEMINI".to_string(), "1. Flashpoint: Hurmuz".to_string())],
+            "LAGR10 tankerinin gorevi nedir?",
+        );
+        assert!(fu.contains("TAKIP SORGUSU"));
+        assert!(fu.contains("Flashpoint: Hurmuz"));
+        assert!(fu.contains("LAGR10 tankerinin gorevi nedir?"));
     }
 }

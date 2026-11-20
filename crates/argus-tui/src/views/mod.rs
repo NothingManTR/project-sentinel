@@ -9,4 +9,3 @@ pub mod osint;
 pub mod satint;
 pub mod sea_tracks;
 pub mod sigint;
-pub mod splash;

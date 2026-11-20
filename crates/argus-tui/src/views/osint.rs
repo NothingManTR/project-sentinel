@@ -25,22 +25,28 @@ pub fn render_osint_view(frame: &mut Frame, area: Rect, state: &mut AppState) {
         .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
         .split(area);
 
+    let has_evi = !state.escalation_metrics.is_empty();
+    let evi_h = if has_evi && area.height >= 24 { 6 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4), // 3'lu Taktik HUD Ozet Kartlari
-            Constraint::Length(3), // Tiklanabilir Sekme & Filtre Cubugu
-            Constraint::Min(8),    // Ana Tablo (Ajans Haberleri veya GDELT/ACLED Catisma)
+            Constraint::Length(4),     // 3'lu Taktik HUD Ozet Kartlari
+            Constraint::Length(evi_h), // Y-6: GDELT EVI Kuresel Gerilim Grafik Paneli
+            Constraint::Length(3),     // Tiklanabilir Sekme & Filtre Cubugu
+            Constraint::Min(8),        // Ana Tablo (Ajans Haberleri veya GDELT/ACLED Catisma)
         ])
         .split(cols[0]);
 
     render_osint_hud(frame, chunks[0], state);
-    render_osint_filter_bar(frame, chunks[1], state);
+    if evi_h > 0 {
+        render_osint_evi_chart(frame, chunks[1], state);
+    }
+    render_osint_filter_bar(frame, chunks[2], state);
 
     if state.news_filter == 5 {
-        render_conflict_table(frame, chunks[2], state);
+        render_conflict_table(frame, chunks[3], state);
     } else {
-        render_news_table(frame, chunks[2], state);
+        render_news_table(frame, chunks[3], state);
     }
 
     // Sag Sutun: Bolgesel & Catisma Mini-Haritasi + Denetci
@@ -151,6 +157,87 @@ fn render_osint_hud(frame: &mut Frame, area: Rect, state: &mut AppState) {
     state
         .hit_tester
         .register(hud_cols[1], HitTarget::OsintCategory(5));
+}
+
+fn render_osint_evi_chart(frame: &mut Frame, area: Rect, state: &mut AppState) {
+    let mut sorted: Vec<(usize, &argus_core::types::EscalationMetric)> = state
+        .escalation_metrics
+        .iter()
+        .enumerate()
+        .collect();
+    sorted.sort_by(|a, b| {
+        b.1.evi_score
+            .cmp(&a.1.evi_score)
+            .then_with(|| b.1.event_count.cmp(&a.1.event_count))
+    });
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(BORDER_DIM))
+        .title(" [ GDELT EVI KURESEL GERILIM GRAFIGI (Tikla: Ulke Catismalarini Filtrele) ] ")
+        .style(Style::default().bg(BG_PANEL));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows_avail = inner.height as usize;
+    if rows_avail == 0 || inner.width < 30 {
+        return;
+    }
+
+    // 2 sutunlu kompakt bar grafigi (en yuksek 8 kriz ulkesi)
+    let two_cols = inner.width >= 68;
+    let col_areas = if two_cols {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(100)])
+            .split(inner)
+    };
+
+    let per_col = rows_avail.min(4);
+    for (c_idx, col_rect) in col_areas.iter().enumerate() {
+        let mut lines = Vec::new();
+        let slice_start = c_idx * per_col;
+        for (r_off, &(orig_idx, m)) in sorted.iter().skip(slice_start).take(per_col).enumerate() {
+            let col = if m.evi_score >= 70 || m.delta_pct >= 30 {
+                TELETEXT_RED
+            } else if m.evi_score >= 40 {
+                TELETEXT_YELLOW
+            } else {
+                TELETEXT_GREEN
+            };
+            let name_clip: String = m.country_name.chars().take(10).collect();
+            let bar_w = (col_rect.width as usize).saturating_sub(28).clamp(6, 18);
+            let filled = ((m.evi_score.min(100) as usize) * bar_w) / 100;
+            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(bar_w.saturating_sub(filled)));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {:<10} ", name_clip),
+                    Style::default().fg(FG_PRIMARY).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(bar, Style::default().fg(col)),
+                Span::styled(
+                    format!(" {:>3} ({:+}% │{})", m.evi_score, m.delta_pct, m.event_count),
+                    Style::default().fg(col).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            state.hit_tester.register(
+                Rect {
+                    x: col_rect.x,
+                    y: col_rect.y + r_off as u16,
+                    width: col_rect.width,
+                    height: 1,
+                },
+                HitTarget::OsintEviCountry(orig_idx),
+            );
+        }
+        frame.render_widget(Paragraph::new(lines), *col_rect);
+    }
 }
 
 fn render_osint_filter_bar(frame: &mut Frame, area: Rect, state: &mut AppState) {

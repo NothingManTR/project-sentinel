@@ -100,7 +100,11 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
     frame.render_widget(content_block, content_area);
 
     let top_reserve = if is_ai_dialog {
-        if state.ai_prompt_input_active { 2 } else { 1 }
+        if state.ai_prompt_input_active || state.ai_followup_input_active {
+            2
+        } else {
+            1
+        }
     } else {
         0
     };
@@ -120,19 +124,24 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
             height: 1,
         };
         let modes = [
-            ("[1:Kuresel Flashpoint]", 0usize),
-            ("[2:Secili Hedef]", 1),
-            ("[3:Bolgesel Kriz]", 2),
-            ("[4:Ozel Soru]", 3),
-            ("[5:KirmiziHucre]", 4),
+            ("[1:Flashpoint]", 0usize),
+            ("[2:Hedef]", 1),
+            ("[3:Bolge]", 2),
+            ("[4:Ozel]", 3),
+            ("[5:OPFOR]", 4),
+            ("[6:Delta]", 5),
         ];
         let mut mx = mode_row.x;
         let mut spans = Vec::new();
         for (lbl, mid) in modes {
             let w = lbl.chars().count() as u16;
-            if mx + w < mode_row.x + mode_row.width.saturating_sub(11) {
+            if mx + w < mode_row.x + mode_row.width.saturating_sub(24) {
                 let active = state.ai_mode == mid;
-                let accent = if mid == 4 { TELETEXT_RED } else { TELETEXT_CYAN };
+                let accent = match mid {
+                    4 => TELETEXT_RED,
+                    5 => TELETEXT_GREEN,
+                    _ => TELETEXT_CYAN,
+                };
                 spans.push(Span::styled(
                     lbl,
                     Style::default()
@@ -147,6 +156,27 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
                 );
                 mx += w + 1;
             }
+        }
+        let fu_lbl = "[F:Takip Sor]";
+        let fw = fu_lbl.chars().count() as u16;
+        if mx + fw <= mode_row.x + mode_row.width.saturating_sub(11) {
+            spans.push(Span::styled(
+                fu_lbl,
+                Style::default()
+                    .fg(TELETEXT_BLACK)
+                    .bg(if state.ai_followup_input_active {
+                        TELETEXT_GREEN
+                    } else {
+                        TELETEXT_CYAN
+                    })
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(" "));
+            state.hit_tester.register(
+                Rect { x: mx, y: mode_row.y, width: fw, height: 1 },
+                HitTarget::AiFollowUpToggle,
+            );
+            mx += fw + 1;
         }
         let ref_lbl = "[R:Yenile]";
         let rw = ref_lbl.chars().count() as u16;
@@ -172,13 +202,34 @@ pub fn render_dialog(frame: &mut Frame, screen_area: Rect, state: &mut AppState)
                 width: content_area.width.saturating_sub(2),
                 height: 1,
             };
-            let q_line = format!(" SORU (Enter=Gonder, Esc=Iptal): {}_", state.ai_custom_prompt);
+            let q_line = format!(" OZEL SORU (Enter=Gonder, Esc=Iptal): {}_", state.ai_custom_prompt);
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     q_line,
                     Style::default()
                         .fg(TELETEXT_BLACK)
                         .bg(TELETEXT_YELLOW)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                prompt_row,
+            );
+        } else if state.ai_followup_input_active {
+            let prompt_row = Rect {
+                x: content_area.x + 1,
+                y: content_area.y + 2,
+                width: content_area.width.saturating_sub(2),
+                height: 1,
+            };
+            let q_line = format!(
+                " TAKIP SORUSU (Cok-Turlu Analist │ Enter=Sor, Esc=Iptal): {}_",
+                state.ai_followup_input
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    q_line,
+                    Style::default()
+                        .fg(TELETEXT_BLACK)
+                        .bg(TELETEXT_GREEN)
                         .add_modifier(Modifier::BOLD),
                 )),
                 prompt_row,

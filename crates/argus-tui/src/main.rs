@@ -43,12 +43,19 @@ async fn main() -> anyhow::Result<()> {
 
     let initial_muted = !config.audio.enabled;
 
-    // 2. Global State oluştur
-    let state = Arc::new(RwLock::new(AppState::new(config)));
+    // 2. Global State oluştur + Kayıtlı Oturum & Bugünün DVR Arşivini Geri Yükle (T-5 / Y-4)
+    let mut initial_state = AppState::new(config);
+    let _ = initial_state.load_session();
+    let _ = initial_state
+        .dvr
+        .load_recent_from_dir(std::path::Path::new("recordings"), 180);
+    let effective_muted = initial_state.audio_muted || initial_muted;
+    initial_state.audio_muted = effective_muted;
+    let state = Arc::new(RwLock::new(initial_state));
     let sdr_queue = Arc::clone(&state.read().sdr_audio_queue);
 
     // 3. Audio Manager başlat (Gerçek KiwiSDR PCM kuyruğuna bağlı)
-    let audio = AudioManager::init(initial_muted, sdr_queue);
+    let audio = AudioManager::init(effective_muted, sdr_queue);
 
     // 4. Veri toplama arka plan işçilerini ve yerel Web Harita sunucusunu (127.0.0.1:8090) başlat
     argus_ingest::start_ingestion_workers(Arc::clone(&state));
@@ -70,8 +77,11 @@ async fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // 6. Ana TUI Uygulamasını Çalıştır
-    let mut app = App::new(state, audio, picker);
+    let mut app = App::new(Arc::clone(&state), audio, picker);
     let app_res = app.run(&mut terminal).await;
+
+    // 6b. Çıkışta Oturumu Diske Kaydet (Watchlist, Boğaz Sayaçları, Harita Katmanları - T-5)
+    let _ = state.read().save_session();
 
     // 7. Terminali Güvenle Geri Yükle
     restore_terminal(&mut terminal)?;

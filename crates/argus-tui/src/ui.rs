@@ -6,7 +6,7 @@ use crate::views::{
     osint::render_osint_view, satint::render_satint_view, sea_tracks::render_sea_tracks_view,
     sigint::render_sigint_view,
 };
-use crate::widgets::dialog::render_dialog;
+use crate::widgets::{command_palette::render_command_palette, dialog::render_dialog};
 use argus_core::mouse::HitTarget;
 use argus_core::state::AppState;
 use argus_core::theme::*;
@@ -44,9 +44,7 @@ pub fn render_main_ui(frame: &mut Frame, state: &mut AppState, photo_ctx: &mut P
     render_header_deck(frame, layout[0], state);
 
     match state.active_view {
-        ActiveView::Splash | ActiveView::Dashboard => {
-            render_dashboard_view(frame, layout[1], state)
-        }
+        ActiveView::Dashboard => render_dashboard_view(frame, layout[1], state),
         ActiveView::Geoint => render_geoint_view(frame, layout[1], state),
         ActiveView::AirTracks => render_air_tracks_view(frame, layout[1], state),
         ActiveView::SeaTracks => render_sea_tracks_view(frame, layout[1], state),
@@ -65,6 +63,10 @@ pub fn render_main_ui(frame: &mut Frame, state: &mut AppState, photo_ctx: &mut P
 
     if state.is_dialog_open {
         render_dialog(frame, screen, state);
+    }
+
+    if state.command_palette.is_open {
+        render_command_palette(frame, screen, state);
     }
 
     photo_ctx.render_active_slot(frame, state);
@@ -153,6 +155,18 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
         HitTarget::DefconBadge,
     );
 
+    let (ok_feeds, tot_feeds) = state.feed_health_counts();
+    let api_lbl = format!(" [API:{}/{}] ", ok_feeds, tot_feeds);
+    let api_col = if tot_feeds == 0 {
+        FG_MUTED
+    } else if ok_feeds == tot_feeds {
+        TELETEXT_GREEN
+    } else if ok_feeds * 2 >= tot_feeds {
+        TELETEXT_YELLOW
+    } else {
+        TELETEXT_RED
+    };
+
     let sdr_lbl = if state.is_radio_playing {
         format!(" [SDR:{:.0}k {:.0}dB] ", state.current_frequency_khz, state.sdr_rssi_dbm)
     } else {
@@ -168,7 +182,8 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let snd_lbl = if state.audio_muted { " [Sus] " } else { " [Ses] " };
     let clk_lbl = format!(" {}Z ", Utc::now().format("%H:%M:%S"));
 
-    let right_len = (sdr_lbl.chars().count()
+    let right_len = (api_lbl.chars().count()
+        + sdr_lbl.chars().count()
         + ai_lbl.chars().count()
         + web_lbl.chars().count()
         + rep_lbl.chars().count()
@@ -184,6 +199,20 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
     r0.push(Span::raw(" ".repeat(pad)));
 
     let mut rx = area.x + area.width.saturating_sub(right_len);
+
+    let api_w = api_lbl.chars().count() as u16;
+    r0.push(Span::styled(
+        api_lbl,
+        Style::default()
+            .fg(api_col)
+            .bg(BG_PRIMARY)
+            .add_modifier(Modifier::BOLD),
+    ));
+    state.hit_tester.register(
+        Rect { x: rx, y: rows[0].y, width: api_w, height: 1 },
+        HitTarget::FeedHealthModal,
+    );
+    rx += api_w;
 
     let sdr_w = sdr_lbl.chars().count() as u16;
     r0.push(Span::styled(
@@ -354,7 +383,7 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
     r2.push(Span::raw(" "));
 
     match state.active_view {
-        ActiveView::Dashboard | ActiveView::Geoint | ActiveView::Splash => {
+        ActiveView::Dashboard | ActiveView::Geoint => {
             let regions = [
                 ("[TR]", 0),
                 ("[IST]", 1),
@@ -574,11 +603,11 @@ fn render_header_deck(frame: &mut Frame, area: Rect, state: &mut AppState) {
 
 fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let ctx_hints = match state.active_view {
-        ActiveView::Dashboard | ActiveView::Splash => {
-            " [1-7/Tab] Panel │ [Z] Buyut │ [P] Sekiller │ [Enter/O] Tam Dosya │ [I] Denetci │ [A] AI SITREP "
+        ActiveView::Dashboard => {
+            " [1-7/Tab] Panel │ [Z] Buyut │ [P] Sekiller │ [Enter/O] Dosya │ [Ctrl+K] Komut │ [Shift+A] AI "
         }
         ActiveView::Geoint => {
-            " [Surukle/WASD/Ok] Gez │ [+/-] Zoom │ [V] Stil │ [P] Sekil │ [I] Denetci │ [Shift+W] Web Harita "
+            " [WASD/Ok] Gez │ [+/-] Zoom │ [G] Koord Git │ [V] Stil │ [P] Sekil │ [Shift+W] Web Harita "
         }
         ActiveView::AirTracks => {
             " [1-6] AOR Filtre │ [Ok/PgUpDn] Sec │ [Enter/O] Foto & Rota Dosya │ [F] Takip │ [B] Izle │ [/] Ara "
@@ -590,22 +619,25 @@ fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
             " [S] Ses │ [F] Frekans │ [U] Mod │ [L] Kilit │ [V] WAV │ [T] Tarama │ [X] VOX │ [C] CW │ [N] Sonraki "
         }
         ActiveView::Osint => {
-            " [0-4] Haber Filtre │ [5] GDELT Catisma Tablosu │ [Ok/Enter/Tikla] Detay & Harita Odak "
+            " [0-4] Haber Filtre │ [5] GDELT Catisma │ [EVI Bar Tikla] Ulke Filtre │ [/] Ara │ [Enter] Dosya "
         }
-        ActiveView::Satint => " [Ok/PgUpDn] Uydu Sec │ [Enter] SGP4 Dosyasi │ [F2] Yer Izi Haritada ",
+        ActiveView::Satint => " [Ok/PgUpDn] Uydu Sec │ [Enter] SGP4 Dosyasi │ [/] Uydu Ara │ [F2] Yer Izi Haritada ",
         ActiveView::Masint => {
-            " [1] Deprem [2] Termal [3] CBRN [4] NOTAM [5] Anomali & Alarmlar │ [Ok/Enter/Tikla] Odak & Dosya "
+            " [1] Deprem [2] Termal [3] CBRN [4] NOTAM [5] Alarmlar │ [/] Ara │ [Ok/Enter/Tikla] Odak & Dosya "
         }
-        ActiveView::Cyberint => " [IP Yaz+Enter] Hibrit BGP/Port Tara │ [Ok/Ctrl+O] CISA/IODA Detay ",
-        ActiveView::Notepad => " [Tab] Arsiv/Editor │ [Ctrl+S] Kaydet │ [Ctrl+N] Yeni │ [Ctrl+H] HTML │ [F5] Zaman ",
-        _ => " [F1-F11] Sekme │ [Shift+A] AI SITREP │ [Ctrl+E] Rapor │ [Q] Cikis ",
+        ActiveView::Cyberint => " [IP Yaz+Enter] Hibrit BGP/Port Tara │ [/] CVE/ASN Ara │ [Ok/Ctrl+O] CISA/IODA Detay ",
+        ActiveView::Notepad => " [Tab] Arsiv/Editor │ [Ctrl+S] Kaydet │ [Ctrl+N] Yeni │ [Ctrl+H] HTML │ [/] Ara │ [F5] Zaman ",
+        _ => " [F1-F11] Sekme │ [Ctrl+K] Komut Paleti │ [Shift+A] AI SITREP │ [Ctrl+E] Rapor │ [Q] Cikis ",
     };
 
+    let cmd_lbl = " [Ctrl+K:Komut] ";
+    let cw = cmd_lbl.chars().count() as u16;
     let help_lbl = " [?:Yardim] ";
     let hw = help_lbl.chars().count() as u16;
     let badge_lbl = " KISAYOL ";
     let bw = badge_lbl.chars().count() as u16;
-    let max_hint = area.width.saturating_sub(bw + hw) as usize;
+    let right_w = cw + hw;
+    let max_hint = area.width.saturating_sub(bw + right_w) as usize;
     let clipped_hint: String = ctx_hints.chars().take(max_hint).collect();
     let used = bw + clipped_hint.chars().count() as u16;
 
@@ -620,11 +652,24 @@ fn render_footer_strip(frame: &mut Frame, area: Rect, state: &mut AppState) {
         Span::styled(clipped_hint, Style::default().fg(FG_PRIMARY).bg(BG_SURFACE)),
     ];
 
-    if area.width >= bw + hw {
-        let pad = area.width.saturating_sub(used + hw) as usize;
+    if area.width >= bw + right_w {
+        let pad = area.width.saturating_sub(used + right_w) as usize;
         if pad > 0 {
             spans.push(Span::styled(" ".repeat(pad), Style::default().bg(BG_SURFACE)));
         }
+        let cx = area.x + area.width - right_w;
+        spans.push(Span::styled(
+            cmd_lbl,
+            Style::default()
+                .fg(TELETEXT_YELLOW)
+                .bg(BG_PANEL)
+                .add_modifier(Modifier::BOLD),
+        ));
+        state.hit_tester.register(
+            Rect { x: cx, y: area.y, width: cw, height: 1 },
+            HitTarget::CommandPaletteOpen,
+        );
+
         let hx = area.x + area.width - hw;
         spans.push(Span::styled(
             help_lbl,
